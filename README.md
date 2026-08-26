@@ -131,6 +131,9 @@ Tools are off by default.
 `read_file` and `list_files` are confined to the directory you started in.
 A path that escapes it — by `..`, by being absolute, or through a symlink — is
 refused, and the refusal is reported back to the model rather than dropped.
+`read_file` also refuses `.env` and `.env.*`, since that is where this CLI
+reads its own token from, and every tool result is passed through the redactor
+before it enters the conversation.
 
 Anything that writes, executes or reaches the network asks before it acts:
 
@@ -164,7 +167,8 @@ The behaviours worth relying on are written down in [REQUIREMENTS.md](REQUIREMEN
 and each has a test derived from it:
 
 - requests never exceed 10 per 60 seconds, including retries;
-- 429s are retried with `Retry-After` honoured, and the retrying stops;
+- 429s are retried with `Retry-After` honoured, bounded in attempts and in
+  wall-clock time, and cancellable mid-backoff;
 - trimming history never drops the system prompt or orphans an assistant reply;
 - the API token never reaches stdout or stderr;
 - slash commands never become chat messages;
@@ -174,6 +178,9 @@ and each has a test derived from it:
 - a tool that writes, executes or fetches never runs without an explicit yes;
 - file tools cannot reach outside the directory you started in;
 - the tool loop is bounded, and every tool call keeps its result attached;
+- tool results never carry the token back to the API or into a transcript;
+- `run_shell` and `fetch_url` are bounded in time and output size, and a
+  cancelled or truncated run is reported as such rather than as a normal result;
 - Markdown styling is identical however the response was split into deltas.
 
 ## Development

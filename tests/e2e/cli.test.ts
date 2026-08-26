@@ -127,6 +127,17 @@ describe("R4 the token never reaches the terminal", () => {
     expect(result.stderr).toContain("[redacted]");
   });
 
+  it("keeps the token out of an error that escapes to the crash handler", async () => {
+    // An unhandled failure is precisely the case redaction exists for, and it
+    // lands outside the scope where the redactor is normally built.
+    const result = await runCli({ args: ["--base-url", "::: not a url :::", "hi"], env: env() });
+
+    expect(result.code).toBe(1);
+    expect(result.stdout).not.toContain(TOKEN);
+    expect(result.stderr).not.toContain(TOKEN);
+    expect(result.stderr).toContain("Invalid URL");
+  });
+
   it("keeps the token out of verbose output on a successful run", async () => {
     server.queue({ kind: "content", deltas: ["ok"] });
 

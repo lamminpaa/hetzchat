@@ -1,3 +1,4 @@
+import type { Redactor } from "../redact.js";
 import { ToolError, type ToolDefinition } from "./types.js";
 
 export interface ToolCall {
@@ -29,6 +30,12 @@ export const denyAll: Approver = {
 export interface ToolRunnerOptions {
   tools: ToolDefinition[];
   root: string;
+  /**
+   * R4: tool results go into history, back to the API and into /save, none of
+   * which pass the terminal output chokepoint. A tool that reads a file
+   * holding the token would otherwise send it straight back to the server.
+   */
+  redact?: Redactor;
   /** Tools pre-authorised by name with --allow-tool. */
   allowed?: ReadonlySet<string>;
   /** Progress reporting, so the user sees what the model is doing. */
@@ -105,7 +112,7 @@ export class ToolRunner {
         root: this.options.root,
         signal,
       });
-      return { id: call.id, name: call.name, content, ok: true };
+      return { id: call.id, name: call.name, content: this.clean(content), ok: true };
     } catch (error) {
       if (error instanceof ToolError) return this.failure(call, error.message);
       return this.failure(call, `${call.name} failed: ${(error as Error).message}`);
@@ -136,8 +143,13 @@ export class ToolRunner {
   }
 
   private failure(call: ToolCall, reason: string): ToolOutcome {
-    this.options.onActivity?.(`${call.name}: ${reason}`);
-    return { id: call.id, name: call.name, content: reason, ok: false };
+    const content = this.clean(reason);
+    this.options.onActivity?.(`${call.name}: ${content}`);
+    return { id: call.id, name: call.name, content, ok: false };
+  }
+
+  private clean(content: string): string {
+    return this.options.redact?.(content) ?? content;
   }
 }
 

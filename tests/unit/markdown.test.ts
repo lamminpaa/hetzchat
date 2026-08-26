@@ -49,6 +49,14 @@ const SAMPLES: Record<string, string> = {
   hashNoSpace: "#hashtag is not a heading\n",
   emptyLines: "one\n\n\ntwo\n",
   noTrailingNewline: "no newline at the end",
+  // A response cut off inside a code block, as max_tokens produces.
+  unclosedFence: "```ts\nconst x = 1;\nconst y =",
+  unclosedFenceNoLang: "```\nhalf a line",
+  unclosedBoldAtEnd: "this is **unfinished",
+  unclosedCodeSpan: "this is `unfinished",
+  longOrderedMarker: "1234567. item\n",
+  veryLongOrderedMarker: "123456789. item\n",
+  notAMarker: "1234567890123 is a number, not a list\n",
 };
 
 describe("R14 rendering is chunk-invariant", () => {

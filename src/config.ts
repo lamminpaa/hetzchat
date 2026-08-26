@@ -120,7 +120,52 @@ export function loadConfigFile(path: string): FileConfig {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new ConfigError(`Config file ${path} must contain a JSON object`);
   }
-  return parsed as FileConfig;
+  return validateFileConfig(parsed as Record<string, unknown>, path);
+}
+
+const FILE_FIELD_TYPES = {
+  baseUrl: "string",
+  model: "string",
+  systemPrompt: "string",
+  temperature: "number",
+  maxOutputTokens: "number",
+  contextBudgetTokens: "number",
+  maxAttempts: "number",
+  maxToolRounds: "number",
+  stream: "boolean",
+  markdown: "boolean",
+  thinking: "boolean",
+  tools: "boolean",
+  allowedTools: "string[]",
+} as const;
+
+/**
+ * R8: the file is validated the way the environment and the flags are. An
+ * unchecked field is worse than a rejected one: `"maxToolRounds": "six"` made
+ * the R12 round comparison NaN, so the bound silently disappeared.
+ */
+function validateFileConfig(raw: Record<string, unknown>, path: string): FileConfig {
+  for (const [key, value] of Object.entries(raw)) {
+    const expected = FILE_FIELD_TYPES[key as keyof typeof FILE_FIELD_TYPES];
+
+    if (expected === undefined) {
+      throw new ConfigError(
+        `Config file ${path} has an unknown setting "${key}". Known settings: ${Object.keys(FILE_FIELD_TYPES).join(", ")}`,
+      );
+    }
+
+    const ok =
+      expected === "string[]"
+        ? Array.isArray(value) && value.every((entry) => typeof entry === "string")
+        : typeof value === expected && (expected !== "number" || Number.isFinite(value));
+
+    if (!ok) {
+      throw new ConfigError(
+        `Config file ${path}: "${key}" must be ${expected === "string[]" ? "an array of strings" : `a ${expected}`}, got ${JSON.stringify(value)}`,
+      );
+    }
+  }
+  return raw as FileConfig;
 }
 
 export interface ResolveInput {

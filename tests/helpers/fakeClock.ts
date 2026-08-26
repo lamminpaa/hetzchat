@@ -11,7 +11,8 @@ export class FakeClock {
     return this.time;
   }
 
-  async sleep(ms: number): Promise<void> {
+  async sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     this.sleeps.push(ms);
     this.time += ms;
     await Promise.resolve();

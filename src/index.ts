@@ -11,12 +11,28 @@ import {
   defaultConfigPath,
   loadConfigFile,
   resolveConfig,
+  TOKEN_ENV_VAR,
   type Config,
 } from "./config.js";
-import { createRedactor } from "./redact.js";
+import { createRedactor, type Redactor } from "./redact.js";
 import { Session } from "./session.js";
 import { BUILTIN_TOOLS } from "./tools/builtin.js";
 import { ToolRunner } from "./tools/runner.js";
+
+/**
+ * R4: the last-resort handler below runs outside main's scope, and an
+ * unanticipated error is exactly the case redaction exists for. Keeping the
+ * redactor at module scope means that path is covered too.
+ */
+let redactForCrash: Redactor = createRedactor([
+  process.env[TOKEN_ENV_VAR],
+  process.env["HETZNER_INFERENCE_API_KEY"],
+]);
+
+/** The crash handler's message, exported so its redaction can be tested. */
+export function describeFatal(error: unknown): string {
+  return redactForCrash(error instanceof Error ? error.message : String(error));
+}
 
 const EXIT_OK = 0;
 const EXIT_ERROR = 1;
@@ -62,6 +78,7 @@ export async function main(argv: readonly string[]): Promise<number> {
 
   // R4: built before anything else can print, and used for every write.
   const redact = createRedactor([config.apiKey]);
+  redactForCrash = redact;
   const output = new Output({
     stdout: process.stdout,
     stderr: process.stderr,
@@ -90,6 +107,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const tools = new ToolRunner({
     tools: BUILTIN_TOOLS,
     root: process.cwd(),
+    redact,
     allowed: new Set(config.allowedTools),
     onActivity: (message) => output.meta(`  ${message}`),
   });
@@ -152,7 +170,7 @@ if (invokedDirectly) {
       process.exitCode = code;
     })
     .catch((error: unknown) => {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(`${describeFatal(error)}\n`);
       process.exitCode = EXIT_ERROR;
     });
 }

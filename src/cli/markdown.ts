@@ -21,8 +21,15 @@ const ANSI = {
   green: "\u001b[32m",
 } as const;
 
-/** Longest line prefix that has to be withheld before a block type is known. */
-const MAX_PREFIX_LOOKAHEAD = 8;
+/** Longest marker `couldBecomeMarker` accepts, "123456789)". */
+const MAX_MARKER_LENGTH = 10;
+
+/**
+ * Longest line prefix withheld before a block type is known: the marker plus
+ * the character that settles it. Derived rather than written down, so it
+ * cannot drift away from what `couldBecomeMarker` accepts.
+ */
+const MAX_PREFIX_LOOKAHEAD = MAX_MARKER_LENGTH + 1;
 
 const NEED_MORE = Symbol("need-more-input");
 
@@ -49,7 +56,7 @@ export class MarkdownStream {
   flush(): string {
     if (!this.color) return "";
     const out = this.drain(true);
-    return out + this.closeInline();
+    return out + this.closeAll();
   }
 
   private drain(final: boolean): string {
@@ -199,6 +206,19 @@ export class MarkdownStream {
     this.codeSpan = false;
     this.heading = false;
     return open ? ANSI.reset : "";
+  }
+
+  /**
+   * Resets everything, fence colouring included. A response truncated inside a
+   * code block is ordinary — max_tokens does it — and must not leave the
+   * user's shell green.
+   */
+  private closeAll(): string {
+    const inline = this.closeInline();
+    if (!this.inFence) return inline;
+
+    this.inFence = false;
+    return inline === "" ? ANSI.reset : inline;
   }
 
   /** Re-applies styles that outlive a reset emitted for a different reason. */

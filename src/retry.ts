@@ -5,12 +5,30 @@
 
 export interface RetryClock {
   now(): number;
-  sleep(ms: number): Promise<void>;
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
 }
 
 export const systemRetryClock: RetryClock = {
   now: () => Date.now(),
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  sleep: (ms, signal) =>
+    new Promise((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(signal.reason);
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+
+      // Without this, Ctrl+C during a backoff is only noticed after the wait.
+      function onAbort(): void {
+        clearTimeout(timer);
+        reject(signal?.reason);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+    }),
 };
 
 export interface RetryOptions {
@@ -18,8 +36,15 @@ export interface RetryOptions {
   baseDelayMs: number;
   maxDelayMs: number;
   clock?: RetryClock;
+  signal?: AbortSignal | undefined;
   /** Called before each wait, so the CLI can tell the user why it is stalling. */
-  onRetry?: (info: { attempt: number; delayMs: number; error: unknown }) => void;
+  onRetry?: (info: {
+    attempt: number;
+    delayMs: number;
+    error: unknown;
+    /** Set when the server asked for longer than maxDelayMs. */
+    requestedMs?: number;
+  }) => void;
 }
 
 export class RetryableError extends Error {
@@ -77,6 +102,8 @@ export async function withRetry<T>(
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    options.signal?.throwIfAborted();
+
     try {
       return await fn(attempt);
     } catch (error) {
@@ -86,10 +113,20 @@ export async function withRetry<T>(
       if (attempt === maxAttempts) break;
 
       const hinted = error instanceof RetryableError ? error.retryAfterMs : undefined;
-      const delayMs = hinted ?? backoffDelay(attempt, baseDelayMs, maxDelayMs);
 
-      onRetry?.({ attempt, delayMs, error });
-      await clock.sleep(delayMs);
+      // A server is free to ask for a day. Attempts were already bounded; this
+      // bounds the wall clock too, so a large Retry-After cannot park the CLI
+      // in a silent sleep with no way out.
+      const requested = hinted ?? backoffDelay(attempt, baseDelayMs, maxDelayMs);
+      const delayMs = Math.min(requested, maxDelayMs);
+
+      onRetry?.({
+        attempt,
+        delayMs,
+        error,
+        ...(requested > delayMs ? { requestedMs: requested } : {}),
+      });
+      await clock.sleep(delayMs, options.signal);
     }
   }
 

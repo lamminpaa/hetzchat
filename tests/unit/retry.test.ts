@@ -95,6 +95,103 @@ describe("R2 bounded 429 handling", () => {
   });
 });
 
+describe("R2 the wall clock is bounded, not just the attempt count", () => {
+  it("caps a Retry-After the server asks for beyond maxDelayMs", async () => {
+    const clock = new FakeClock();
+    const fn = vi.fn(async () => {
+      // A day, which a server is free to ask for.
+      throw rateLimited(86_400_000);
+    });
+
+    await expect(
+      withRetry(fn, isRetryable, { maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 30_000, clock }),
+    ).rejects.toBeInstanceOf(RetryableError);
+
+    expect(clock.sleeps).toEqual([30_000, 30_000]);
+    expect(Math.max(...clock.sleeps)).toBeLessThanOrEqual(30_000);
+  });
+
+  it("reports what the server actually asked for when it caps the wait", async () => {
+    const clock = new FakeClock();
+    const seen: { delayMs: number; requestedMs?: number }[] = [];
+
+    await expect(
+      withRetry(
+        async () => {
+          throw rateLimited(86_400_000);
+        },
+        isRetryable,
+        {
+          maxAttempts: 2,
+          baseDelayMs: 1000,
+          maxDelayMs: 30_000,
+          clock,
+          onRetry: (info) => seen.push(info),
+        },
+      ),
+    ).rejects.toBeInstanceOf(RetryableError);
+
+    expect(seen[0]?.delayMs).toBe(30_000);
+    expect(seen[0]?.requestedMs).toBe(86_400_000);
+  });
+
+  it("does not report a requested delay when nothing was capped", async () => {
+    const clock = new FakeClock();
+    const seen: { requestedMs?: number }[] = [];
+
+    await expect(
+      withRetry(
+        async () => {
+          throw rateLimited(2000);
+        },
+        isRetryable,
+        { maxAttempts: 2, baseDelayMs: 1000, maxDelayMs: 30_000, clock, onRetry: (i) => seen.push(i) },
+      ),
+    ).rejects.toBeInstanceOf(RetryableError);
+
+    expect(seen[0]?.requestedMs).toBeUndefined();
+  });
+
+  it("abandons a pending backoff when the turn is cancelled", async () => {
+    const clock = new FakeClock();
+    const controller = new AbortController();
+    const fn = vi.fn(async () => {
+      controller.abort(new Error("Cancelled."));
+      throw rateLimited(30_000);
+    });
+
+    await expect(
+      withRetry(fn, isRetryable, {
+        maxAttempts: 5,
+        baseDelayMs: 1000,
+        maxDelayMs: 30_000,
+        clock,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("Cancelled.");
+
+    expect(fn, "kept retrying after cancellation").toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start at all when already cancelled", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("Cancelled."));
+    const fn = vi.fn(async () => "unreachable");
+
+    await expect(
+      withRetry(fn, isRetryable, {
+        maxAttempts: 3,
+        baseDelayMs: 1000,
+        maxDelayMs: 30_000,
+        clock: new FakeClock(),
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("Cancelled.");
+
+    expect(fn).not.toHaveBeenCalled();
+  });
+});
+
 describe("R2 Retry-After parsing", () => {
   it("reads delta-seconds", () => {
     expect(parseRetryAfter("30", 0)).toBe(30_000);

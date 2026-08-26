@@ -25,7 +25,8 @@ export interface ChatBody {
 }
 
 export interface ScriptedToolCall {
-  id: string;
+  /** Omitted to mimic a server that does not send ids. */
+  id?: string;
   name: string;
   arguments: string;
 }
@@ -212,7 +213,14 @@ async function streamToolCalls(
     // The id and name arrive once, up front.
     res.write(
       `data: ${JSON.stringify(
-        toolChunk([{ index, id: call.id, type: "function", function: { name: call.name, arguments: "" } }]),
+        toolChunk([
+          {
+            index,
+            ...(call.id === undefined ? {} : { id: call.id }),
+            type: "function",
+            function: { name: call.name, arguments: "" },
+          },
+        ]),
       )}\n\n`,
     );
     // The arguments arrive a character at a time.
@@ -244,7 +252,7 @@ function respondToolCalls(
           role: "assistant",
           content: (reply.deltas ?? []).join("") || null,
           tool_calls: reply.calls.map((call) => ({
-            id: call.id,
+            ...(call.id === undefined ? {} : { id: call.id }),
             type: "function",
             function: { name: call.name, arguments: call.arguments },
           })),

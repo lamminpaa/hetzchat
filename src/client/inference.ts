@@ -96,6 +96,7 @@ export class InferenceClient {
         maxAttempts: this.options.maxAttempts,
         baseDelayMs: this.options.baseDelayMs ?? 1000,
         maxDelayMs: this.options.maxDelayMs ?? 30_000,
+        ...(signal ? { signal } : {}),
         ...(this.options.retryClock ? { clock: this.options.retryClock } : {}),
         ...(this.options.onRetry ? { onRetry: this.options.onRetry } : {}),
       },

@@ -106,7 +106,9 @@ export class OpenAITransport implements Transport {
       const completion = response as ChatCompletionLike;
       const choice = completion.choices?.[0];
       const calls = (choice?.message?.tool_calls ?? [])
-        .map((call) => toToolCall(call.id, call.function?.name, call.function?.arguments))
+        .map((call, index) =>
+          toToolCall(call.id ?? `call_${index}`, call.function?.name, call.function?.arguments),
+        )
         .filter((call): call is ToolCallMessage => call !== undefined);
 
       return {
@@ -185,14 +187,19 @@ class ToolCallAccumulator {
   }
 }
 
+/**
+ * `id` must already be unique. Callers supply a positional fallback, never one
+ * keyed on the tool name: a response calling the same tool twice would then
+ * produce two results sharing a tool_call_id, breaking R15.
+ */
 function toToolCall(
-  id: string | null | undefined,
+  id: string,
   name: string | null | undefined,
   args: string | null | undefined,
 ): ToolCallMessage | undefined {
   if (!name) return undefined;
   return {
-    id: id ?? `call_${name}`,
+    id,
     type: "function",
     function: { name, arguments: args ?? "" },
   };

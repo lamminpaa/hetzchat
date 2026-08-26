@@ -106,8 +106,18 @@ export async function runRepl({
       confirm: async (summary) => {
         output.warn(summary);
         output.meta("Allow? [y/N]");
-        const answer = (await queue.next())?.trim().toLowerCase() ?? "";
-        return answer === "y" || answer === "yes";
+
+        const raw = (await queue.next())?.trim() ?? "";
+        const answer = raw.toLowerCase();
+        const approved = answer === "y" || answer === "yes";
+
+        // On a pipe the next line was typed as a message, not as an answer.
+        // Echo what was consumed so the turn is not silently swallowed.
+        if (!terminal) output.meta(`Answered: ${raw === "" ? "(end of input)" : raw}`);
+        if (!approved && raw !== "" && !["n", "no"].includes(answer)) {
+          output.warn(`Read "${raw}" as no. It was not sent to the model.`);
+        }
+        return approved;
       },
     };
   }

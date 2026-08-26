@@ -15,9 +15,12 @@ Source: Hetzner Inference API docs, "Rate limits" (10 requests / 4M input tokens
 ## R2 — Bounded 429 handling
 
 On HTTP 429, the client retries with exponential backoff, honouring the
-`Retry-After` header when present (delta-seconds or HTTP-date). Retries are
-bounded: after the configured attempt budget is spent the error is surfaced.
-The client must never retry indefinitely.
+`Retry-After` header when present (delta-seconds or HTTP-date).
+
+Both the attempt count and the wall clock are bounded. A server is free to ask
+for a day; a wait is capped at `maxDelayMs`, and what was actually asked for is
+reported rather than silently obeyed. A cancelled turn abandons a pending
+backoff immediately instead of at the next attempt.
 
 ## R3 — Trimming preserves conversation structure
 
@@ -28,11 +31,18 @@ When history is trimmed to fit the context budget:
   are dropped as whole user/assistant exchanges;
 - the newest user message is never dropped.
 
-## R4 — The API token never reaches the terminal
+## R4 — The API token does not leak
 
 The token must not appear in stdout, stderr, or any error text the CLI prints,
-including in verbose mode. Redaction is enforced at the single output
-chokepoint so a leak anywhere upstream is still caught.
+including in verbose mode and including an error that reaches the last-resort
+crash handler, which runs outside the scope where the redactor is normally
+built. Redaction is enforced at the output chokepoint so a leak anywhere
+upstream is still caught.
+
+Tool results are redacted too. They do not pass the terminal chokepoint: they
+go into history, back to the API on the next round, and into the file `/save`
+writes. `read_file` additionally refuses `.env` and `.env.*`, which is where
+the CLI reads its own token from.
 
 ## R5 — Slash commands stay local
 

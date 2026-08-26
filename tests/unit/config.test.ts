@@ -1,12 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ConfigError,
   DEFAULTS,
+  loadConfigFile,
   resolveConfig,
   TOKEN_ENV_VAR,
   type CliFlags,
   type FileConfig,
 } from "../../src/config.js";
+
+const configDirs: string[] = [];
+
+async function writeConfig(contents: unknown): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "hetzchat-config-"));
+  configDirs.push(dir);
+  const path = join(dir, "config.json");
+  await writeFile(path, JSON.stringify(contents), "utf8");
+  return path;
+}
+
+afterEach(async () => {
+  await Promise.all(configDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 const withToken = (extra: Record<string, string> = {}) => ({
   [TOKEN_ENV_VAR]: "token-value-1234567890",
@@ -70,6 +88,61 @@ describe("R8 configuration precedence", () => {
 
   it("leaves thinking unset when nobody asked for it", () => {
     expect(resolveConfig({ env: withToken() }).thinking).toBeUndefined();
+  });
+});
+
+describe("R8 the config file is validated like every other source", () => {
+  it("rejects a number field that is not a number", async () => {
+    const path = await writeConfig({ maxToolRounds: "six" });
+
+    // Left unchecked this made the R12 round comparison NaN, so the bound
+    // silently disappeared and a tool loop could run forever.
+    expect(() => loadConfigFile(path)).toThrow(/"maxToolRounds" must be a number/);
+  });
+
+  it("rejects a string where a list of strings belongs", async () => {
+    const path = await writeConfig({ allowedTools: "run_shell" });
+
+    expect(() => loadConfigFile(path)).toThrow(/"allowedTools" must be an array of strings/);
+  });
+
+  it("rejects a boolean where a string belongs", async () => {
+    const path = await writeConfig({ model: true });
+
+    expect(() => loadConfigFile(path)).toThrow(/"model" must be a string/);
+  });
+
+  it("rejects a setting nobody recognises, rather than ignoring it", async () => {
+    const path = await writeConfig({ modle: "typo" });
+
+    expect(() => loadConfigFile(path)).toThrow(/unknown setting "modle"/);
+  });
+
+  it("accepts a well-formed file", async () => {
+    const path = await writeConfig({
+      model: "Qwen3.8-27B",
+      temperature: 0.3,
+      tools: true,
+      allowedTools: ["run_shell"],
+    });
+
+    expect(loadConfigFile(path)).toEqual({
+      model: "Qwen3.8-27B",
+      temperature: 0.3,
+      tools: true,
+      allowedTools: ["run_shell"],
+    });
+  });
+
+  it("treats a missing file as no settings at all", () => {
+    expect(loadConfigFile(join(tmpdir(), "hetzchat-does-not-exist", "config.json"))).toEqual({});
+  });
+
+  it("reports a file that is not JSON", async () => {
+    const path = join(await mkdtemp(join(tmpdir(), "hetzchat-config-")), "config.json");
+    await writeFile(path, "{not json", "utf8");
+
+    expect(() => loadConfigFile(path)).toThrow(/not valid JSON/);
   });
 });
 

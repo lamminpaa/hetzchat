@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,6 +120,43 @@ describe("a read-only tool call end to end", () => {
   });
 });
 
+describe("R15 every call gets a distinct id, even when the server omits them", () => {
+  const twiceSameTool = {
+    kind: "toolCall" as const,
+    calls: [
+      { name: "read_file", arguments: '{"path":"notes.txt"}' },
+      { name: "read_file", arguments: '{"path":"other.txt"}' },
+    ],
+  };
+
+  it("does not collide two calls to the same tool in one streamed response", async () => {
+    await writeFile(join(workspace, "other.txt"), "the other file\n", "utf8");
+    server.queue(twiceSameTool, { kind: "content", deltas: ["read both"] });
+
+    await runCli({ args: ["--tools", "read both"], env: env(), cwd: workspace });
+
+    const results = (server.chatRequests[1]?.body?.messages ?? []).filter((m) => m.role === "tool");
+    expect(results).toHaveLength(2);
+    expect(new Set(results.map((m) => m.tool_call_id)).size, "two calls share one id").toBe(2);
+    expect(results.map((m) => m.content)).toEqual(["the file says hello\n", "the other file\n"]);
+  });
+
+  it("does not collide them in a non-streamed response either", async () => {
+    await writeFile(join(workspace, "other.txt"), "the other file\n", "utf8");
+    server.queue(twiceSameTool, { kind: "content", deltas: ["read both"] });
+
+    await runCli({
+      args: ["--tools", "--no-stream", "read both"],
+      env: env(),
+      cwd: workspace,
+    });
+
+    const results = (server.chatRequests[1]?.body?.messages ?? []).filter((m) => m.role === "tool");
+    expect(results).toHaveLength(2);
+    expect(new Set(results.map((m) => m.tool_call_id)).size, "two calls share one id").toBe(2);
+  });
+});
+
 describe("R11 a side-effecting tool needs authorisation", () => {
   const touchPwned = {
     kind: "toolCall" as const,
@@ -204,6 +244,82 @@ describe("R11 a side-effecting tool needs authorisation", () => {
     });
 
     expect(await exists(join(workspace, "pwned.txt"))).toBe(false);
+  });
+
+  it("says which line it read as the answer, so a piped turn is not silently eaten", async () => {
+    server.queue(touchPwned, { kind: "content", deltas: ["Understood."] });
+
+    const result = await runCli({
+      args: ["-i", "--tools"],
+      stdin: "make a file\nmy actual next question\n/exit\n",
+      env: env(),
+      cwd: workspace,
+    });
+
+    // The line was consumed as the y/N answer rather than sent to the model.
+    // That is unavoidable on a pipe, but it must not happen invisibly.
+    expect(result.stdout).toContain("Answered: my actual next question");
+    expect(result.stderr).toContain('Read "my actual next question" as no');
+  });
+});
+
+describe("fetch_url is bounded", () => {
+  it("stops reading a response that never ends, instead of hanging or filling memory", async () => {
+    // A server that streams for as long as anyone will listen.
+    const firehose = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      const pump = (): void => {
+        if (res.writableEnded) return;
+        if (res.write("x".repeat(64 * 1024))) setImmediate(pump);
+        else res.once("drain", pump);
+      };
+      pump();
+    });
+    firehose.listen(0, "127.0.0.1");
+    await once(firehose, "listening");
+    const { port } = firehose.address() as AddressInfo;
+
+    try {
+      server.queue(
+        {
+          kind: "toolCall",
+          calls: [
+            {
+              id: "call_1",
+              name: "fetch_url",
+              arguments: JSON.stringify({ url: `http://127.0.0.1:${port}/` }),
+            },
+          ],
+        },
+        { kind: "content", deltas: ["that was a lot"] },
+      );
+
+      const startedAt = Date.now();
+      const result = await runCli({
+        args: ["--allow-tool", "fetch_url", "fetch it"],
+        env: env(),
+        cwd: workspace,
+        timeoutMs: 60_000,
+      });
+      const elapsed = Date.now() - startedAt;
+
+      expect(result.code).toBe(0);
+
+      // The byte cap is what has to stop this. Without it the read runs until
+      // the request timeout, buffering the whole time, so the giveaway is how
+      // long the turn took rather than how much text came back.
+      expect(elapsed, "the read was not stopped by the byte cap").toBeLessThan(10_000);
+
+      const toolResult = (server.chatRequests[1]?.body?.messages ?? []).find(
+        (m) => m.role === "tool",
+      );
+      expect(toolResult?.content).toBeDefined();
+      expect((toolResult?.content as string).length).toBeLessThan(20_000);
+    } finally {
+      firehose.closeAllConnections();
+      firehose.close();
+      await once(firehose, "close");
+    }
   });
 });
 

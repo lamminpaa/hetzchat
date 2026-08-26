@@ -3,8 +3,15 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { resolveWithinRoot } from "../../src/tools/paths.js";
-import { BUILTIN_TOOLS, listFilesTool, readFileTool, runShellTool } from "../../src/tools/builtin.js";
+import {
+  BUILTIN_TOOLS,
+  formatEntries,
+  listFilesTool,
+  readFileTool,
+  runShellTool,
+} from "../../src/tools/builtin.js";
 import { ToolRunner, denyAll, type Approver } from "../../src/tools/runner.js";
+import { createRedactor } from "../../src/redact.js";
 import { ToolError, truncateResult, MAX_TOOL_RESULT_CHARS } from "../../src/tools/types.js";
 
 let root: string;
@@ -98,6 +105,55 @@ describe("R13 file tools cannot escape the working root", () => {
 
     expect(result.ok).toBe(true);
     expect(result.content).toBe("inside content\n");
+  });
+});
+
+describe("R4 the token cannot ride out on a tool result", () => {
+  it("refuses to read the .env the CLI takes its own token from", async () => {
+    await writeFile(join(root, ".env"), "HETZNER_INFERENCE_TOKEN=secret-token-value\n", "utf8");
+    const { runner } = makeRunner();
+
+    const result = await runner.execute(call("read_file", { path: ".env" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.content).toMatch(/holds credentials/);
+    expect(result.content).not.toContain("secret-token-value");
+  });
+
+  it("refuses .env variants too", async () => {
+    await writeFile(join(root, ".env.production"), "TOKEN=another-secret-value\n", "utf8");
+    const { runner } = makeRunner();
+
+    const result = await runner.execute(call("read_file", { path: ".env.production" }));
+
+    expect(result.ok).toBe(false);
+    expect(result.content).not.toContain("another-secret-value");
+  });
+
+  it("still reads ordinary dotfiles", async () => {
+    await writeFile(join(root, ".gitignore"), "node_modules\n", "utf8");
+    const { runner } = makeRunner();
+
+    const result = await runner.execute(call("read_file", { path: ".gitignore" }));
+
+    expect(result.ok).toBe(true);
+    expect(result.content).toBe("node_modules\n");
+  });
+
+  it("blinds the token if it turns up in a tool result anyway", async () => {
+    const token = "hetzner-token-abcdef1234567890";
+    await writeFile(join(root, "leak.txt"), `key = ${token}\n`, "utf8");
+
+    const runner = new ToolRunner({
+      tools: BUILTIN_TOOLS,
+      root,
+      redact: createRedactor([token]),
+    });
+
+    const result = await runner.execute(call("read_file", { path: "leak.txt" }));
+
+    expect(result.content, "a tool result carried the token back to the API").not.toContain(token);
+    expect(result.content).toContain("[redacted]");
   });
 });
 
@@ -223,6 +279,79 @@ describe("tool failures come back as results, not exceptions", () => {
 
     expect(result.ok).toBe(true);
     expect(result.content).toContain("exit code 3");
+  });
+});
+
+describe("shell failures are reported honestly", () => {
+  it("reports a cancelled command as cancelled, not as a completed run", async () => {
+    const { runner } = makeRunner({ approver: approver(true) });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("Cancelled.")), 50);
+
+    const result = await runner.execute(call("run_shell", { command: "sleep 5" }), controller.signal);
+
+    expect(result.ok).toBe(false);
+    expect(result.content).toMatch(/Cancelled before it finished/);
+    expect(result.content, "a cancelled command was dressed up as a normal result").not.toMatch(
+      /exit code/,
+    );
+  });
+
+  it("refuses to hand over silently truncated output when the buffer overflows", async () => {
+    const { runner } = makeRunner({ approver: approver(true) });
+
+    const result = await runner.execute(
+      call("run_shell", { command: "yes hello | head -c 5000000" }),
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.content).toMatch(/exceeded 4 MB/);
+    expect(result.content, "truncated output was passed off as complete").not.toMatch(/exit code/);
+  });
+});
+
+describe("directory listings are stable", () => {
+  /** Deliberately unsorted, which is what capping-before-sorting relies on. */
+  const shuffled = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      name: `file-${String((i * 397) % count).padStart(4, "0")}.txt`,
+      isDirectory: () => false,
+    }));
+
+  it("sorts before capping, so the listing is the alphabetical beginning", () => {
+    const lines = formatEntries(shuffled(600)).split("\n");
+
+    expect(lines[0]).toBe("- file-0000.txt");
+    expect(lines[1]).toBe("- file-0001.txt");
+    expect(lines[499]).toBe("- file-0499.txt");
+    expect(formatEntries(shuffled(600))).not.toContain("file-0599.txt");
+  });
+
+  it("says how many entries it left out", () => {
+    expect(formatEntries(shuffled(600))).toContain("[100 more entries not listed]");
+  });
+
+  it("does not cap a directory that fits", () => {
+    const listing = formatEntries(shuffled(10));
+
+    expect(listing.split("\n")).toHaveLength(10);
+    expect(listing).not.toContain("not listed");
+  });
+
+  it("names an empty directory rather than returning nothing", () => {
+    expect(formatEntries([])).toBe("(empty directory)");
+  });
+
+  it("lists the same entries on repeated runs of the real tool", async () => {
+    for (let i = 0; i < 600; i++) {
+      await writeFile(join(root, `file-${String(i).padStart(4, "0")}.txt`), "x", "utf8");
+    }
+    const { runner } = makeRunner();
+
+    const first = await runner.execute(call("list_files", {}));
+    const second = await runner.execute(call("list_files", {}));
+
+    expect(first.content).toBe(second.content);
   });
 });
 

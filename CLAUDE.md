@@ -54,4 +54,11 @@ Two things that are easy to get wrong here:
   that is why the R15 assertion is positional rather than set-based.
 - The Markdown renderer must withhold input whenever a decision depends on
   characters that have not arrived. Anything else makes output depend on how
-  the network chunked the response.
+  the network chunked the response. `MAX_PREFIX_LOOKAHEAD` is derived from
+  `MAX_MARKER_LENGTH` so the two cannot drift apart.
+- `readdir` returns sorted entries on most filesystems, which hides an
+  order-dependent listing bug. That is why `formatEntries` is exported and
+  tested directly rather than through the tool.
+- Node reports a *string* `code` from `execFile` when a command did not complete
+  normally (`ABORT_ERR`, `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`). Treating it as an
+  exit status hands the model truncated output dressed up as a finished run.
