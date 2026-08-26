@@ -1,0 +1,14 @@
+services:
+  hetzchat:
+    build: .
+    image: hetzchat:local
+    environment:
+      HETZNER_INFERENCE_TOKEN: ${HETZNER_INFERENCE_TOKEN:?set HETZNER_INFERENCE_TOKEN in .env or the environment}
+      HETZNER_INFERENCE_BASE_URL: ${HETZNER_INFERENCE_BASE_URL:-}
+      HETZCHAT_MODEL: ${HETZCHAT_MODEL:-}
+      HETZCHAT_SYSTEM: ${HETZCHAT_SYSTEM:-}
+    # Required for the interactive session; harmless for one-shot runs.
+    stdin_open: true
+    tty: true
+    volumes:
+      - ./transcripts:/data

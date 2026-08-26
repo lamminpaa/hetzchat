@@ -1,0 +1,32 @@
+{
+  "name": "hetzchat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Terminal chat client for the Hetzner Experiments Inference API",
+  "type": "module",
+  "bin": {
+    "hetzchat": "./dist/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run build && vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:e2e": "npm run build && vitest run tests/e2e",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "openai": "^7.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  }
+}

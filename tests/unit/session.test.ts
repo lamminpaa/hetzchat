@@ -1,0 +1,168 @@
+import { describe, expect, it } from "vitest";
+import { InferenceClient } from "../../src/client/inference.js";
+import { InferenceError } from "../../src/client/errors.js";
+import { RetryableError } from "../../src/retry.js";
+import { DEFAULTS, resolveConfig, TOKEN_ENV_VAR } from "../../src/config.js";
+import { Session } from "../../src/session.js";
+import { captureOutput } from "../helpers/captureOutput.js";
+import { FakeTransport, type StreamScript } from "../helpers/fakeTransport.js";
+import { FakeClock } from "../helpers/fakeClock.js";
+
+const TOKEN = "token-value-1234567890";
+
+function makeSession(script?: StreamScript, overrides: Record<string, string> = {}) {
+  const transport = new FakeTransport(script);
+  const captured = captureOutput([TOKEN]);
+  const config = resolveConfig({ env: { [TOKEN_ENV_VAR]: TOKEN, ...overrides } });
+  const clock = new FakeClock();
+
+  const client = new InferenceClient({
+    transport,
+    requestsPerWindow: DEFAULTS.requestsPerWindow,
+    rateWindowMs: DEFAULTS.rateWindowMs,
+    maxAttempts: 3,
+    limiterClock: clock,
+    retryClock: clock,
+  });
+
+  return { transport, captured, session: new Session({ config, client, output: captured.output }) };
+}
+
+describe("R6 streaming fidelity", () => {
+  it("stores exactly the text that was printed", async () => {
+    const { session, captured } = makeSession({ deltas: ["Hel", "lo, ", "world", "!"] });
+
+    const result = await session.ask("hi");
+
+    expect(result.ok).toBe(true);
+    expect(captured.stdout()).toBe("Hello, world!\n");
+    expect(session.conversation.history().at(-1)).toEqual({
+      role: "assistant",
+      content: "Hello, world!",
+    });
+  });
+
+  it("assembles deltas that split a word or a newline", async () => {
+    const { session, captured } = makeSession({ deltas: ["line one\n", "li", "ne two"] });
+
+    await session.ask("hi");
+
+    expect(captured.stdout()).toBe("line one\nline two\n");
+    expect(session.conversation.history().at(-1)?.content).toBe("line one\nline two");
+  });
+
+  it("stores the same text when streaming is off", async () => {
+    const { session, captured } = makeSession({ deltas: ["complete answer"] }, {
+      HETZCHAT_STREAM: "off",
+    });
+
+    await session.ask("hi");
+
+    expect(captured.stdout()).toBe("complete answer\n");
+    expect(session.conversation.history().at(-1)?.content).toBe("complete answer");
+  });
+
+  it("carries the trimmed history into the request", async () => {
+    const { session, transport } = makeSession({ deltas: ["ok"] });
+
+    await session.ask("first question");
+    await session.ask("second question");
+
+    const second = transport.streamCalls[1];
+    expect(second?.messages.map((m) => m.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    expect(second?.messages.at(-1)?.content).toBe("second question");
+  });
+});
+
+describe("R7 a failed turn leaves history clean", () => {
+  it("rolls the user message back out when the request fails", async () => {
+    const { session } = makeSession({ error: new InferenceError("Bad Request", 400) });
+
+    const result = await session.ask("this will fail");
+
+    expect(result.ok).toBe(false);
+    expect(session.conversation.history()).toHaveLength(0);
+  });
+
+  it("leaves earlier successful turns untouched", async () => {
+    const { session, transport } = makeSession();
+    transport.queue({ deltas: ["good answer"] }, { error: new InferenceError("Bad Request", 400) });
+
+    await session.ask("first");
+    await session.ask("second");
+
+    expect(session.conversation.history()).toEqual([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "good answer" },
+    ]);
+  });
+
+  it("sends no dangling user message on the next turn after a failure", async () => {
+    const { session, transport } = makeSession();
+    transport.queue({ error: new InferenceError("Bad Request", 400) }, { deltas: ["recovered"] });
+
+    await session.ask("doomed");
+    await session.ask("retry");
+
+    const second = transport.streamCalls[1];
+    expect(second?.messages.map((m) => m.content)).toEqual([
+      session.conversation.system,
+      "retry",
+    ]);
+  });
+
+  it("reports the failure on stderr without leaking the token", async () => {
+    const { session, captured } = makeSession({
+      error: new InferenceError(`401 rejected token ${TOKEN}`, 401),
+    });
+
+    await session.ask("hi");
+
+    expect(captured.stderr()).not.toContain(TOKEN);
+    expect(captured.stderr()).toContain("401");
+  });
+});
+
+describe("R9 mid-stream failures are not retried", () => {
+  it("does not repeat output when a stream dies after printing", async () => {
+    const { session, captured, transport } = makeSession({
+      deltas: ["The answer is "],
+      error: new RetryableError("connection reset", 503, 0, undefined),
+    });
+
+    const result = await session.ask("hi");
+
+    expect(result.ok).toBe(false);
+    expect(transport.streamCalls, "the dead stream was retried").toHaveLength(1);
+    expect(captured.stdout()).toBe("The answer is ");
+    expect(captured.stdout().match(/The answer is /g)).toHaveLength(1);
+  });
+
+  it("still retries a stream that failed before printing anything", async () => {
+    const { session, transport } = makeSession();
+    transport.queue(
+      { error: new RetryableError("503", 503, 0, undefined) },
+      { error: new RetryableError("503", 503, 0, undefined) },
+      { deltas: ["third time lucky"] },
+    );
+
+    const result = await session.ask("hi");
+
+    expect(result.ok).toBe(true);
+    expect(transport.streamCalls).toHaveLength(3);
+    expect(session.conversation.history().at(-1)?.content).toBe("third time lucky");
+  });
+});
+
+describe("image attachments", () => {
+  it("rejects a file type the models cannot read", async () => {
+    const { session } = makeSession();
+
+    await expect(session.attachImage("/tmp/notes.txt")).rejects.toThrow(/Unsupported image type/);
+  });
+});
