@@ -139,7 +139,9 @@ describe("R9 mid-stream failures are not retried", () => {
 
     expect(result.ok).toBe(false);
     expect(transport.streamCalls, "the dead stream was retried").toHaveLength(1);
-    expect(captured.stdout()).toBe("The answer is ");
+    // The partial answer is kept and the line is closed, so the error that
+    // follows does not run into the model's text.
+    expect(captured.stdout()).toBe("The answer is \n");
     expect(captured.stdout().match(/The answer is /g)).toHaveLength(1);
   });
 

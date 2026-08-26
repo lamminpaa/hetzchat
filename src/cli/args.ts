@@ -33,6 +33,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
         config: { type: "string" },
         stream: { type: "boolean" },
         "no-stream": { type: "boolean" },
+        markdown: { type: "boolean" },
+        "no-markdown": { type: "boolean" },
         think: { type: "boolean" },
         "no-think": { type: "boolean" },
         interactive: { type: "boolean", short: "i" },
@@ -50,6 +52,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   if (values.stream === true && values["no-stream"] === true) {
     throw new ArgsError("--stream and --no-stream contradict each other");
   }
+  if (values.markdown === true && values["no-markdown"] === true) {
+    throw new ArgsError("--markdown and --no-markdown contradict each other");
+  }
   if (values.think === true && values["no-think"] === true) {
     throw new ArgsError("--think and --no-think contradict each other");
   }
@@ -66,6 +71,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   }
   if (values.stream === true) flags.stream = true;
   if (values["no-stream"] === true) flags.stream = false;
+  if (values.markdown === true) flags.markdown = true;
+  if (values["no-markdown"] === true) flags.markdown = false;
   if (values.think === true) flags.thinking = true;
   if (values["no-think"] === true) flags.thinking = false;
   if (values.verbose === true) flags.verbose = true;
@@ -106,6 +113,8 @@ Options:
       --config <path>          Config file to read
   -i, --interactive            Run the session loop even on piped stdin
       --stream / --no-stream   Stream the response as it arrives
+      --markdown / --no-markdown
+                               Style the model's Markdown in the terminal
       --think / --no-think     Toggle the model's thinking mode (undocumented)
   -v, --verbose                Report retries, throttling and token usage
   -h, --help                   Show this help

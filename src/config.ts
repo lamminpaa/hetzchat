@@ -19,6 +19,8 @@ export interface Config {
   rateWindowMs: number;
   maxAttempts: number;
   stream: boolean;
+  /** Style the model's Markdown in the terminal. */
+  markdown: boolean;
   /** Undefined leaves the vendor default alone rather than forcing a value. */
   thinking: boolean | undefined;
   verbose: boolean;
@@ -43,6 +45,7 @@ export const DEFAULTS = {
   rateWindowMs: 60_000,
   maxAttempts: 4,
   stream: true,
+  markdown: true,
   verbose: false,
 } as const;
 
@@ -63,6 +66,7 @@ export interface FileConfig {
   contextBudgetTokens?: number;
   maxAttempts?: number;
   stream?: boolean;
+  markdown?: boolean;
   thinking?: boolean;
 }
 
@@ -73,6 +77,7 @@ export interface CliFlags {
   temperature?: number;
   maxOutputTokens?: number;
   stream?: boolean;
+  markdown?: boolean;
   thinking?: boolean;
   verbose?: boolean;
 }
@@ -161,6 +166,11 @@ export function resolveConfig({ flags = {}, env = {}, file = {} }: ResolveInput)
       DEFAULTS.maxAttempts,
     stream:
       flags.stream ?? boolFromEnv(env["HETZCHAT_STREAM"]) ?? file.stream ?? DEFAULTS.stream,
+    markdown:
+      flags.markdown ??
+      boolFromEnv(env["HETZCHAT_MARKDOWN"]) ??
+      file.markdown ??
+      DEFAULTS.markdown,
     thinking: flags.thinking ?? boolFromEnv(env["HETZCHAT_THINKING"]) ?? file.thinking,
     verbose: flags.verbose ?? boolFromEnv(env["HETZCHAT_VERBOSE"]) ?? DEFAULTS.verbose,
   };

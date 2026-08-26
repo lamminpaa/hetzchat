@@ -1,3 +1,4 @@
+import { MarkdownStream } from "./markdown.js";
 import type { Redactor } from "../redact.js";
 
 /**
@@ -15,6 +16,8 @@ export interface OutputOptions {
   stderr: Writable;
   redact: Redactor;
   color: boolean;
+  /** Style the model's Markdown as it streams. Off implies raw passthrough. */
+  markdown?: boolean;
 }
 
 const ANSI = {
@@ -27,7 +30,39 @@ const ANSI = {
 } as const;
 
 export class Output {
+  private stream: MarkdownStream | undefined;
+
   constructor(private readonly options: OutputOptions) {}
+
+  /** Starts a model response. Styling state is per response, not per session. */
+  beginStream(): void {
+    this.stream = new MarkdownStream(this.options.color && this.options.markdown !== false);
+  }
+
+  /** One delta from the model, styled if styling is on. */
+  writeDelta(delta: string): void {
+    this.write(this.stream?.push(delta) ?? delta);
+  }
+
+  /**
+   * Ends a model response: emits whatever the renderer withheld and closes the
+   * line. Safe to call on the failure path, where held characters would
+   * otherwise be lost.
+   */
+  endStream(): void {
+    if (this.stream !== undefined) {
+      this.write(this.stream.flush());
+      this.stream = undefined;
+    }
+    this.line();
+  }
+
+  /** A whole response that did not arrive as a stream. */
+  block(text: string): void {
+    this.beginStream();
+    this.writeDelta(text);
+    this.endStream();
+  }
 
   /** Streaming body text, written without a trailing newline. */
   write(text: string): void {

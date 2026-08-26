@@ -65,6 +65,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     stderr: process.stderr,
     redact,
     color: process.stdout.isTTY === true && process.env["NO_COLOR"] === undefined,
+    markdown: config.markdown,
   });
 
   const client = new InferenceClient({

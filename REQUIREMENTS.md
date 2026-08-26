@@ -65,3 +65,12 @@ naming the environment variable to set.
 
 Once any output for a turn has been shown to the user, a later failure in that
 same turn is surfaced rather than retried, so text is never printed twice.
+
+## R14 — Markdown rendering is chunk-invariant and lossless
+
+Styled output for a given response is byte-identical however the network split
+that response into deltas. Only marker characters are consumed; no content
+character is dropped, and no style is left open at the end of a response.
+
+Styling is off whenever colour is off, so piped and redirected output stays
+raw text.

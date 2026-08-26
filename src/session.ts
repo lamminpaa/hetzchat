@@ -118,16 +118,18 @@ export class Session {
       thinking: this.thinking,
     };
 
+    if (this.stream) this.output.beginStream();
+
     try {
       const result = this.stream
-        ? await this.client.stream(request, (delta) => this.output.write(delta), signal)
+        ? await this.client.stream(request, (delta) => this.output.writeDelta(delta), signal)
         : await this.client.complete(request, signal);
 
       if (this.stream) {
-        // Close the streamed line; the deltas carried no trailing newline.
-        this.output.line();
+        // Flushes anything the Markdown renderer withheld, then closes the line.
+        this.output.endStream();
       } else {
-        this.output.line(result.text);
+        this.output.block(result.text);
       }
 
       // R6: history stores exactly the text that was printed.
@@ -140,6 +142,10 @@ export class Session {
       }
       return { ok: true, text: result.text };
     } catch (error) {
+      // Whatever the renderer withheld is still the model's output; show it
+      // rather than dropping it because the turn failed.
+      if (this.stream) this.output.endStream();
+
       // R7: the turn failed, so it leaves no trace in history.
       this.conversation.rollbackLastUser();
 
