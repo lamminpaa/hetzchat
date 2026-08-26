@@ -1,3 +1,4 @@
+import type { ToolCallMessage } from "../../src/conversation.js";
 import type {
   ChatRequest,
   ChatResult,
@@ -10,6 +11,21 @@ export interface StreamScript {
   deltas?: string[];
   error?: unknown;
   usage?: { promptTokens: number; completionTokens: number };
+  /** Tool calls the model asks for on this response. */
+  toolCalls?: { name: string; arguments: string; id?: string }[];
+}
+
+let callCounter = 0;
+
+function toToolCalls(script: StreamScript): ToolCallMessage[] | undefined {
+  if (script.toolCalls === undefined || script.toolCalls.length === 0) return undefined;
+  return script.toolCalls.map((call) => ({
+    // Ids must be unique across responses, as the API's are; reusing one lets
+    // an unanswered call masquerade as an answered one.
+    id: call.id ?? `call_${(callCounter += 1)}`,
+    type: "function" as const,
+    function: { name: call.name, arguments: call.arguments },
+  }));
 }
 
 /**
@@ -46,14 +62,18 @@ export class FakeTransport implements Transport {
       onDelta(delta);
     }
     if (script.error !== undefined) throw script.error;
-    return { text, usage: script.usage };
+    return { text, usage: script.usage, toolCalls: toToolCalls(script) };
   }
 
   async complete(request: ChatRequest): Promise<ChatResult> {
     this.completeCalls.push(structuredClone(request));
     const script = this.scripts.shift() ?? this.fallback;
     if (script.error !== undefined) throw script.error;
-    return { text: (script.deltas ?? []).join(""), usage: script.usage };
+    return {
+      text: (script.deltas ?? []).join(""),
+      usage: script.usage,
+      toolCalls: toToolCalls(script),
+    };
   }
 
   async listModels(): Promise<string[]> {

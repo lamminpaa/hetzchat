@@ -4,7 +4,7 @@
  * R7: a failed turn is rolled back out of history.
  */
 
-export type Role = "system" | "user" | "assistant";
+export type Role = "system" | "user" | "assistant" | "tool";
 
 export interface TextPart {
   type: "text";
@@ -18,9 +18,20 @@ export interface ImagePart {
 
 export type ContentPart = TextPart | ImagePart;
 
+/** A tool call as the API frames it, kept in the wire shape for round-tripping. */
+export interface ToolCallMessage {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
+
 export interface ChatMessage {
   role: Role;
-  content: string | ContentPart[];
+  /** Null on an assistant turn that only called tools. */
+  content: string | ContentPart[] | null;
+  tool_calls?: ToolCallMessage[];
+  /** R15: on a tool result, the call it answers. */
+  tool_call_id?: string;
 }
 
 /**
@@ -42,6 +53,12 @@ const IMAGE_TOKENS = 1024;
 
 export function estimateTokens(message: ChatMessage): number {
   let tokens = MESSAGE_OVERHEAD_TOKENS;
+
+  for (const call of message.tool_calls ?? []) {
+    tokens += Math.ceil((call.function.name.length + call.function.arguments.length) / CHARS_PER_TOKEN);
+  }
+
+  if (message.content === null) return tokens;
 
   if (typeof message.content === "string") {
     tokens += Math.ceil(message.content.length / CHARS_PER_TOKEN);
@@ -91,6 +108,32 @@ export class Conversation {
 
   addAssistant(text: string): void {
     this.turns.push({ role: "assistant", content: text });
+  }
+
+  /** An assistant turn that called tools; content may be empty. */
+  addAssistantToolCalls(text: string, calls: ToolCallMessage[]): void {
+    this.turns.push({
+      role: "assistant",
+      content: text === "" ? null : text,
+      tool_calls: calls,
+    });
+  }
+
+  /** R15: a result is always attached to the call that produced it. */
+  addToolResult(callId: string, content: string): void {
+    this.turns.push({ role: "tool", content, tool_call_id: callId });
+  }
+
+  /**
+   * R7 for a tool-using turn: removes everything back to and including the
+   * user message, so a turn abandoned mid tool loop leaves no assistant call
+   * without its result.
+   */
+  rollbackTurn(): void {
+    while (this.turns.length > 0 && (this.turns.at(-1) as ChatMessage).role !== "user") {
+      this.turns.pop();
+    }
+    this.turns.pop();
   }
 
   /**
@@ -149,8 +192,16 @@ export class Conversation {
   toMarkdown(): string {
     const lines = [`# Transcript`, ``, `## System`, ``, this.systemPrompt, ``];
     for (const message of this.turns) {
+      if (message.role === "tool") {
+        lines.push(`## Tool result`, ``, renderContent(message.content), ``);
+        continue;
+      }
       lines.push(`## ${message.role === "user" ? "User" : "Assistant"}`, ``);
-      lines.push(renderContent(message.content), ``);
+
+      for (const call of message.tool_calls ?? []) {
+        lines.push(`Called \`${call.function.name}\` with \`${call.function.arguments}\``, ``);
+      }
+      if (message.content !== null) lines.push(renderContent(message.content), ``);
     }
     return lines.join("\n");
   }
@@ -174,7 +225,8 @@ function groupIntoExchanges(turns: readonly ChatMessage[]): ChatMessage[][] {
   return exchanges;
 }
 
-function renderContent(content: string | ContentPart[]): string {
+function renderContent(content: string | ContentPart[] | null): string {
+  if (content === null) return "";
   if (typeof content === "string") return content;
   return content
     .map((part) => (part.type === "text" ? part.text : `![image](${describeImage(part)})`))

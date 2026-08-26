@@ -56,7 +56,10 @@ echo "question" | hetzchat   Same, reading the prompt from stdin
 | `--config <path>` | Config file to read |
 | `-i, --interactive` | Run the session loop even on piped stdin |
 | `--stream` / `--no-stream` | Stream the response as it arrives |
+| `--markdown` / `--no-markdown` | Style the model's Markdown in the terminal |
 | `--think` / `--no-think` | Toggle thinking mode (undocumented API extension) |
+| `--tools` / `--no-tools` | Let the model call local tools |
+| `--allow-tool <name>` | Pre-authorise a tool; repeatable. Implies `--tools` |
 | `-v, --verbose` | Report retries, throttling and token usage |
 
 ### Session commands
@@ -71,6 +74,7 @@ echo "question" | hetzchat   Same, reading the prompt from stdin
 | `/temp [n]` | Show or set the sampling temperature |
 | `/stream on\|off` | Toggle streaming |
 | `/think on\|off` | Toggle thinking mode |
+| `/tools on\|off` | Show or toggle the model's access to local tools |
 | `/image <path>` | Attach an image to the next message |
 | `/save [path]` | Write the transcript to Markdown |
 | `/usage` | Token usage and remaining rate-limit budget |
@@ -94,6 +98,10 @@ Precedence: CLI flags, then environment, then config file, then defaults.
 | `HETZCHAT_CONTEXT_BUDGET` | History budget in estimated tokens |
 | `HETZCHAT_MAX_ATTEMPTS` | Attempts per request before giving up |
 | `HETZCHAT_STREAM` | `on` / `off` |
+| `HETZCHAT_MARKDOWN` | `on` / `off` |
+| `HETZCHAT_TOOLS` | `on` / `off` |
+| `HETZCHAT_MAX_TOOL_ROUNDS` | Tool rounds allowed per turn |
+| `HETZCHAT_ALLOW_TOOLS` | Comma-separated tools to pre-authorise |
 | `HETZCHAT_VERBOSE` | `on` / `off` |
 
 A `.env` file in the working directory is loaded automatically. The config file
@@ -107,6 +115,42 @@ lives at `$XDG_CONFIG_HOME/hetzchat/config.json` (default
   "temperature": 0.3
 }
 ```
+
+## Tools
+
+With `--tools`, the model can call local tools and use the results to answer.
+Tools are off by default.
+
+| Tool | What it does | Authorisation |
+| --- | --- | --- |
+| `read_file` | Read a text file | Runs directly |
+| `list_files` | List a directory | Runs directly |
+| `run_shell` | Run a shell command | Asks first |
+| `fetch_url` | Fetch an http/https URL | Asks first |
+
+`read_file` and `list_files` are confined to the directory you started in.
+A path that escapes it — by `..`, by being absolute, or through a symlink — is
+refused, and the refusal is reported back to the model rather than dropped.
+
+Anything that writes, executes or reaches the network asks before it acts:
+
+```
+> summarise the test failures
+run_shell wants to run: npm test  (in /home/you/project)
+Allow? [y/N] y
+```
+
+Answering anything but `y` refuses the call and tells the model so, which is
+usually enough for it to carry on without that tool. Single-shot runs have
+nobody to ask, so they refuse; pre-authorise a specific tool for scripting:
+
+```sh
+hetzchat --allow-tool run_shell "which tests are failing and why?"
+```
+
+Each turn is capped at `HETZCHAT_MAX_TOOL_ROUNDS` (default 6) rounds of tool
+use, so a model that keeps asking for tools stops rather than spending the
+rate-limit budget in a loop.
 
 ## Models
 
@@ -125,7 +169,12 @@ and each has a test derived from it:
 - the API token never reaches stdout or stderr;
 - slash commands never become chat messages;
 - a failed turn leaves no dangling user message in history;
-- a stream that already printed output is never retried, so no text is doubled.
+- a stream that already printed output is never retried, so no text is doubled;
+- no tool definitions are sent unless tools are on;
+- a tool that writes, executes or fetches never runs without an explicit yes;
+- file tools cannot reach outside the directory you started in;
+- the tool loop is bounded, and every tool call keeps its result attached;
+- Markdown styling is identical however the response was split into deltas.
 
 ## Development
 

@@ -23,6 +23,11 @@ export interface Config {
   markdown: boolean;
   /** Undefined leaves the vendor default alone rather than forcing a value. */
   thinking: boolean | undefined;
+  /** R10: tools are off unless asked for. */
+  tools: boolean;
+  maxToolRounds: number;
+  /** R11: tools pre-authorised by name, so they run without a prompt. */
+  allowedTools: string[];
   verbose: boolean;
 }
 
@@ -46,6 +51,8 @@ export const DEFAULTS = {
   maxAttempts: 4,
   stream: true,
   markdown: true,
+  tools: false,
+  maxToolRounds: 6,
   verbose: false,
 } as const;
 
@@ -68,6 +75,9 @@ export interface FileConfig {
   stream?: boolean;
   markdown?: boolean;
   thinking?: boolean;
+  tools?: boolean;
+  maxToolRounds?: number;
+  allowedTools?: string[];
 }
 
 export interface CliFlags {
@@ -79,6 +89,8 @@ export interface CliFlags {
   stream?: boolean;
   markdown?: boolean;
   thinking?: boolean;
+  tools?: boolean;
+  allowedTools?: string[];
   verbose?: boolean;
 }
 
@@ -172,6 +184,16 @@ export function resolveConfig({ flags = {}, env = {}, file = {} }: ResolveInput)
       file.markdown ??
       DEFAULTS.markdown,
     thinking: flags.thinking ?? boolFromEnv(env["HETZCHAT_THINKING"]) ?? file.thinking,
+    tools: flags.tools ?? boolFromEnv(env["HETZCHAT_TOOLS"]) ?? file.tools ?? DEFAULTS.tools,
+    maxToolRounds:
+      numberFromEnv(env["HETZCHAT_MAX_TOOL_ROUNDS"], "HETZCHAT_MAX_TOOL_ROUNDS") ??
+      file.maxToolRounds ??
+      DEFAULTS.maxToolRounds,
+    allowedTools: [
+      ...(file.allowedTools ?? []),
+      ...listFromEnv(env["HETZCHAT_ALLOW_TOOLS"]),
+      ...(flags.allowedTools ?? []),
+    ],
     verbose: flags.verbose ?? boolFromEnv(env["HETZCHAT_VERBOSE"]) ?? DEFAULTS.verbose,
   };
 }
@@ -192,6 +214,15 @@ function numberFromEnv(value: string | undefined, name: string): number | undefi
     throw new ConfigError(`${name} must be a number, got ${JSON.stringify(value)}`);
   }
   return parsed;
+}
+
+function listFromEnv(value: string | undefined): string[] {
+  const text = firstNonEmpty(value);
+  if (text === undefined) return [];
+  return text
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
 }
 
 function boolFromEnv(value: string | undefined): boolean | undefined {

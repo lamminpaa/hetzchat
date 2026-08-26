@@ -35,6 +35,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
         "no-stream": { type: "boolean" },
         markdown: { type: "boolean" },
         "no-markdown": { type: "boolean" },
+        tools: { type: "boolean" },
+        "no-tools": { type: "boolean" },
+        "allow-tool": { type: "string", multiple: true },
         think: { type: "boolean" },
         "no-think": { type: "boolean" },
         interactive: { type: "boolean", short: "i" },
@@ -58,6 +61,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   if (values.think === true && values["no-think"] === true) {
     throw new ArgsError("--think and --no-think contradict each other");
   }
+  if (values.tools === true && values["no-tools"] === true) {
+    throw new ArgsError("--tools and --no-tools contradict each other");
+  }
 
   const flags: CliFlags = {};
   if (values.model !== undefined) flags.model = values.model;
@@ -73,6 +79,14 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
   if (values["no-stream"] === true) flags.stream = false;
   if (values.markdown === true) flags.markdown = true;
   if (values["no-markdown"] === true) flags.markdown = false;
+  if (values.tools === true) flags.tools = true;
+  if (values["no-tools"] === true) flags.tools = false;
+  const allowed = values["allow-tool"];
+  if (allowed !== undefined && allowed.length > 0) {
+    flags.allowedTools = allowed;
+    // Naming a tool to allow is only meaningful with tools on, so imply it.
+    if (values["no-tools"] !== true) flags.tools = true;
+  }
   if (values.think === true) flags.thinking = true;
   if (values["no-think"] === true) flags.thinking = false;
   if (values.verbose === true) flags.verbose = true;
@@ -116,6 +130,8 @@ Options:
       --markdown / --no-markdown
                                Style the model's Markdown in the terminal
       --think / --no-think     Toggle the model's thinking mode (undocumented)
+      --tools / --no-tools     Let the model call local tools
+      --allow-tool <name>      Pre-authorise a tool; repeatable. Implies --tools
   -v, --verbose                Report retries, throttling and token usage
   -h, --help                   Show this help
       --version                Show the version

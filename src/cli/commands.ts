@@ -148,6 +148,31 @@ export const COMMANDS: Command[] = [
     },
   },
   {
+    name: "tools",
+    args: "[on|off]",
+    summary: "Show or toggle the model's access to local tools",
+    run(args, { session, output }) {
+      if (session.tools === undefined) {
+        output.warn("This build has no tools wired in.");
+        return;
+      }
+
+      const value = parseToggle(args, session.toolsEnabled);
+      if (value === undefined) {
+        output.warn("Use /tools on or /tools off");
+        return;
+      }
+      session.toolsEnabled = value;
+
+      output.meta(`Tools ${value ? "on" : "off"}`);
+      if (!value) return;
+
+      output.heading("Available");
+      for (const name of session.tools.names) output.line(`  ${name}`);
+      output.meta("  Anything that writes, runs, or fetches asks before it acts.");
+    },
+  },
+  {
     name: "image",
     args: "<path>",
     summary: "Attach an image to the next message",

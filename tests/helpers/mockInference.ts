@@ -11,15 +11,32 @@ export interface RecordedRequest {
 
 export interface ChatBody {
   model?: string;
-  messages?: { role: string; content: unknown }[];
+  messages?: {
+    role: string;
+    content: unknown;
+    tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+    tool_call_id?: string;
+  }[];
+  tools?: { function: { name: string } }[];
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
   enable_thinking?: boolean;
 }
 
+export interface ScriptedToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 export type Reply =
   | { kind: "content"; deltas: string[]; usage?: { prompt: number; completion: number } }
+  /**
+   * A tool-calling response. When streaming, the arguments are split one
+   * character per chunk, as a real server spreads them across deltas.
+   */
+  | { kind: "toolCall"; deltas?: string[]; calls: ScriptedToolCall[] }
   /** Closes the socket after emitting `deltas`, as a dropped connection would. */
   | { kind: "truncate"; deltas: string[] }
   | { kind: "status"; status: number; retryAfter?: string; message?: string };
@@ -107,6 +124,12 @@ export class MockInferenceServer {
       return;
     }
 
+    if (reply.kind === "toolCall") {
+      if (body?.stream === true) await streamToolCalls(res, reply);
+      else respondToolCalls(res, reply, body);
+      return;
+    }
+
     if (body?.stream === true) {
       await streamReply(res, reply);
     } else {
@@ -169,6 +192,78 @@ async function streamReply(
   );
   res.write("data: [DONE]\n\n");
   res.end();
+}
+
+async function streamToolCalls(
+  res: ServerResponse,
+  reply: Reply & { kind: "toolCall" },
+): Promise<void> {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+
+  for (const delta of reply.deltas ?? []) {
+    res.write(`data: ${JSON.stringify(chunk({ content: delta }))}\n\n`);
+  }
+
+  reply.calls.forEach((call, index) => {
+    // The id and name arrive once, up front.
+    res.write(
+      `data: ${JSON.stringify(
+        toolChunk([{ index, id: call.id, type: "function", function: { name: call.name, arguments: "" } }]),
+      )}\n\n`,
+    );
+    // The arguments arrive a character at a time.
+    for (const char of call.arguments) {
+      res.write(
+        `data: ${JSON.stringify(toolChunk([{ index, function: { arguments: char } }]))}\n\n`,
+      );
+    }
+  });
+
+  res.write(`data: ${JSON.stringify(chunk({}, "tool_calls"))}\n\n`);
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
+function respondToolCalls(
+  res: ServerResponse,
+  reply: Reply & { kind: "toolCall" },
+  body: ChatBody | undefined,
+): void {
+  respondJson(res, 200, {
+    id: "chatcmpl-mock",
+    object: "chat.completion",
+    model: body?.model ?? "mock",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: (reply.deltas ?? []).join("") || null,
+          tool_calls: reply.calls.map((call) => ({
+            id: call.id,
+            type: "function",
+            function: { name: call.name, arguments: call.arguments },
+          })),
+        },
+        finish_reason: "tool_calls",
+      },
+    ],
+    usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+  });
+}
+
+function toolChunk(toolCalls: unknown[]) {
+  return {
+    id: "chatcmpl-mock",
+    object: "chat.completion.chunk",
+    created: 0,
+    model: "mock",
+    choices: [{ index: 0, delta: { tool_calls: toolCalls }, finish_reason: null }],
+  };
 }
 
 function chunk(delta: { content?: string }, finishReason: string | null = null) {

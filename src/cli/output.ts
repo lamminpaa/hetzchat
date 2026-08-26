@@ -31,16 +31,19 @@ const ANSI = {
 
 export class Output {
   private stream: MarkdownStream | undefined;
+  private streamWrote = false;
 
   constructor(private readonly options: OutputOptions) {}
 
   /** Starts a model response. Styling state is per response, not per session. */
   beginStream(): void {
     this.stream = new MarkdownStream(this.options.color && this.options.markdown !== false);
+    this.streamWrote = false;
   }
 
   /** One delta from the model, styled if styling is on. */
   writeDelta(delta: string): void {
+    if (delta !== "") this.streamWrote = true;
     this.write(this.stream?.push(delta) ?? delta);
   }
 
@@ -54,7 +57,9 @@ export class Output {
       this.write(this.stream.flush());
       this.stream = undefined;
     }
-    this.line();
+    // A turn that only called tools printed nothing; do not open a blank line.
+    if (this.streamWrote) this.line();
+    this.streamWrote = false;
   }
 
   /** A whole response that did not arrive as a stream. */

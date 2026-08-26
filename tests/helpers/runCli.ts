@@ -15,6 +15,8 @@ export interface CliOptions {
   args?: string[];
   stdin?: string;
   env?: Record<string, string | undefined>;
+  /** Working directory, which is also the root the file tools are confined to. */
+  cwd?: string;
   timeoutMs?: number;
 }
 
@@ -26,10 +28,11 @@ export async function runCli({
   args = [],
   stdin = "",
   env = {},
+  cwd = ROOT,
   timeoutMs = 20_000,
 }: CliOptions = {}): Promise<CliResult> {
   const child = spawn(process.execPath, [ENTRY, ...args], {
-    cwd: ROOT,
+    cwd,
     env: {
       PATH: process.env["PATH"] ?? "",
       HOME: process.env["HOME"] ?? "",

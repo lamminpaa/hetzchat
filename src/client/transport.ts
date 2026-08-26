@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import type { ChatMessage } from "../conversation.js";
+import type { ChatMessage, ToolCallMessage } from "../conversation.js";
 import { parseRetryAfter, RetryableError } from "../retry.js";
 import { InferenceError, statusOf } from "./errors.js";
 
@@ -10,6 +10,8 @@ export interface ChatRequest {
   maxOutputTokens: number;
   /** Undocumented Hetzner extension; only sent when explicitly set. */
   thinking?: boolean | undefined;
+  /** R10: absent unless tools are switched on. */
+  tools?: Record<string, unknown>[] | undefined;
 }
 
 export interface Usage {
@@ -21,6 +23,7 @@ export interface ChatResult {
   text: string;
   usage?: Usage | undefined;
   finishReason?: string | undefined;
+  toolCalls?: ToolCallMessage[] | undefined;
 }
 
 export type DeltaHandler = (delta: string) => void;
@@ -63,6 +66,7 @@ export class OpenAITransport implements Transport {
     let text = "";
     let usage: Usage | undefined;
     let finishReason: string | undefined;
+    const toolCalls = new ToolCallAccumulator();
 
     try {
       const stream = await this.client.chat.completions.create(
@@ -78,6 +82,8 @@ export class OpenAITransport implements Transport {
           text += delta;
           onDelta(delta);
         }
+        for (const partial of choice?.delta?.tool_calls ?? []) toolCalls.add(partial);
+
         if (choice?.finish_reason) finishReason = choice.finish_reason;
         if (chunk.usage) usage = toUsage(chunk.usage);
       }
@@ -85,7 +91,7 @@ export class OpenAITransport implements Transport {
       throw toClientError(error);
     }
 
-    return { text, usage, finishReason };
+    return { text, usage, finishReason, toolCalls: toolCalls.result() };
   }
 
   async complete(request: ChatRequest, signal?: AbortSignal): Promise<ChatResult> {
@@ -99,10 +105,15 @@ export class OpenAITransport implements Transport {
 
       const completion = response as ChatCompletionLike;
       const choice = completion.choices?.[0];
+      const calls = (choice?.message?.tool_calls ?? [])
+        .map((call) => toToolCall(call.id, call.function?.name, call.function?.arguments))
+        .filter((call): call is ToolCallMessage => call !== undefined);
+
       return {
         text: choice?.message?.content ?? "",
         usage: completion.usage ? toUsage(completion.usage) : undefined,
         finishReason: choice?.finish_reason ?? undefined,
+        toolCalls: calls.length > 0 ? calls : undefined,
       };
     } catch (error) {
       throw toClientError(error);
@@ -119,9 +130,15 @@ export class OpenAITransport implements Transport {
   }
 }
 
+interface RawToolCallDelta {
+  index?: number;
+  id?: string | null;
+  function?: { name?: string | null; arguments?: string | null } | null;
+}
+
 interface ChatChunk {
   choices?: {
-    delta?: { content?: string | null };
+    delta?: { content?: string | null; tool_calls?: RawToolCallDelta[] | null };
     finish_reason?: string | null;
   }[];
   usage?: RawUsage | null;
@@ -129,10 +146,56 @@ interface ChatChunk {
 
 interface ChatCompletionLike {
   choices?: {
-    message?: { content?: string | null };
+    message?: {
+      content?: string | null;
+      tool_calls?: { id?: string | null; function?: { name?: string | null; arguments?: string | null } | null }[] | null;
+    };
     finish_reason?: string | null;
   }[];
   usage?: RawUsage | null;
+}
+
+/**
+ * Tool calls arrive spread across chunks: the id and name come once, the
+ * arguments in pieces, all keyed by position in the call list.
+ */
+class ToolCallAccumulator {
+  private readonly parts = new Map<number, { id: string; name: string; args: string }>();
+
+  add(delta: RawToolCallDelta): void {
+    const index = delta.index ?? 0;
+    const current = this.parts.get(index) ?? { id: "", name: "", args: "" };
+
+    if (delta.id) current.id = delta.id;
+    if (delta.function?.name) current.name += delta.function.name;
+    if (delta.function?.arguments) current.args += delta.function.arguments;
+
+    this.parts.set(index, current);
+  }
+
+  result(): ToolCallMessage[] | undefined {
+    if (this.parts.size === 0) return undefined;
+
+    const calls = [...this.parts.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([index, part]) => toToolCall(part.id || `call_${index}`, part.name, part.args))
+      .filter((call): call is ToolCallMessage => call !== undefined);
+
+    return calls.length > 0 ? calls : undefined;
+  }
+}
+
+function toToolCall(
+  id: string | null | undefined,
+  name: string | null | undefined,
+  args: string | null | undefined,
+): ToolCallMessage | undefined {
+  if (!name) return undefined;
+  return {
+    id: id ?? `call_${name}`,
+    type: "function",
+    function: { name, arguments: args ?? "" },
+  };
 }
 
 interface RawUsage {
@@ -148,6 +211,8 @@ function buildBody(request: ChatRequest): Record<string, unknown> {
     max_tokens: request.maxOutputTokens,
   };
   if (request.thinking !== undefined) body["enable_thinking"] = request.thinking;
+  // R10: the key is absent, not empty, when tools are off.
+  if (request.tools !== undefined && request.tools.length > 0) body["tools"] = request.tools;
   return body;
 }
 

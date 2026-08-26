@@ -29,7 +29,8 @@ src/
   config.ts          flag > env > file > default resolution
   session.ts         one turn: ask, print, store, roll back on failure
   client/            transport (OpenAI SDK) and the client that composes limit + retry
-  cli/               args, output chokepoint, slash commands, REPL
+  cli/               args, output chokepoint, slash commands, REPL, Markdown renderer
+  tools/             tool definitions, the root-confined path resolver, the runner
 ```
 
 ## Working on this
@@ -48,3 +49,9 @@ Two things that are easy to get wrong here:
   in `cli/repl.ts` exists for that; do not replace it with `for await (const line of rl)`.
 - Retries must go through the rate limiter. A retry that skips it is exactly the
   request the server is already refusing.
+- Tool call ids in test fixtures must be unique across responses. Reusing one
+  lets an unanswered call match an answered one and hides an R15 violation;
+  that is why the R15 assertion is positional rather than set-based.
+- The Markdown renderer must withhold input whenever a decision depends on
+  characters that have not arrived. Anything else makes output depend on how
+  the network chunked the response.

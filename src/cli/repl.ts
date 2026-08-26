@@ -97,6 +97,21 @@ export async function runRepl({
     if (!closed && !exiting) rl.prompt();
   };
 
+  // R11: the session loop is the only thing that can say yes to a tool call.
+  // It reads the answer from the same queue as ordinary input, so piped and
+  // typed sessions behave identically.
+  if (session.tools !== undefined) {
+    session.tools.approver = {
+      interactive: true,
+      confirm: async (summary) => {
+        output.warn(summary);
+        output.meta("Allow? [y/N]");
+        const answer = (await queue.next())?.trim().toLowerCase() ?? "";
+        return answer === "y" || answer === "yes";
+      },
+    };
+  }
+
   if (terminal) {
     output.heading(`hetzchat  ${session.model}`);
     output.meta("Type /help for commands, Ctrl+C to cancel a reply, Ctrl+D to leave.");

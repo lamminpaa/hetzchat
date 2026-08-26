@@ -74,3 +74,35 @@ character is dropped, and no style is left open at the end of a response.
 
 Styling is off whenever colour is off, so piped and redirected output stays
 raw text.
+
+## R10 — Tools are opt-in
+
+No tool definitions are sent to the API unless tools are switched on. A session
+with tools off is byte-for-byte the request it would have made before tools
+existed.
+
+## R11 — Every tool run is authorised
+
+A tool that can write, execute, or reach the network never runs without
+explicit authorisation: either a `yes` answered in the session for that
+specific call, or a `--allow-tool <name>` flag naming that tool. Single-shot
+runs have nobody to ask, so they refuse rather than auto-approve. Refusal is
+reported back to the model as a tool result, so the turn continues honestly
+instead of pretending the tool ran.
+
+## R12 — The tool loop is bounded
+
+A turn performs at most a configured number of tool rounds. Beyond that the
+turn ends with an explanation rather than looping.
+
+## R13 — File tools cannot escape the working root
+
+Any path that resolves outside the working root is refused, whether it gets
+there by `..`, by being absolute, or through a symlink.
+
+## R15 — Tool results stay attached to their call
+
+Every tool result carries the `tool_call_id` of the call that produced it, and
+a request is never sent with an assistant tool call that has no matching
+result. Trimming drops whole exchanges, so a tool call and its results are
+never separated.

@@ -15,6 +15,8 @@ import {
 } from "./config.js";
 import { createRedactor } from "./redact.js";
 import { Session } from "./session.js";
+import { BUILTIN_TOOLS } from "./tools/builtin.js";
+import { ToolRunner } from "./tools/runner.js";
 
 const EXIT_OK = 0;
 const EXIT_ERROR = 1;
@@ -85,7 +87,14 @@ export async function main(argv: readonly string[]): Promise<number> {
     },
   });
 
-  const session = new Session({ config, client, output });
+  const tools = new ToolRunner({
+    tools: BUILTIN_TOOLS,
+    root: process.cwd(),
+    allowed: new Set(config.allowedTools),
+    onActivity: (message) => output.meta(`  ${message}`),
+  });
+
+  const session = new Session({ config, client, output, tools });
 
   const oneShot = parsed.prompt ?? (await readPipedPrompt(parsed.interactive));
   if (oneShot !== undefined) {

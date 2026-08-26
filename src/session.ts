@@ -2,15 +2,18 @@ import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
 import type { InferenceClient } from "./client/inference.js";
 import { describeError } from "./client/errors.js";
-import type { ChatRequest } from "./client/transport.js";
+import type { ChatRequest, ChatResult } from "./client/transport.js";
 import type { Config } from "./config.js";
 import { Conversation, type ContentPart } from "./conversation.js";
+import type { ToolRunner } from "./tools/runner.js";
 import type { Output } from "./cli/output.js";
 
 export interface SessionOptions {
   config: Config;
   client: InferenceClient;
   output: Output;
+  /** Absent when the build has no tools wired in; tools stay off either way. */
+  tools?: ToolRunner | undefined;
 }
 
 export interface TurnResult {
@@ -34,6 +37,7 @@ export class Session {
   readonly conversation: Conversation;
   readonly client: InferenceClient;
   readonly output: Output;
+  readonly tools: ToolRunner | undefined;
 
   model: string;
   temperature: number;
@@ -42,14 +46,17 @@ export class Session {
   stream: boolean;
   thinking: boolean | undefined;
   verbose: boolean;
+  toolsEnabled: boolean;
+  maxToolRounds: number;
 
   /** Images attached with /image, consumed by the next message. */
   private pendingImages: ContentPart[] = [];
 
-  constructor({ config, client, output }: SessionOptions) {
+  constructor({ config, client, output, tools }: SessionOptions) {
     this.conversation = new Conversation(config.systemPrompt);
     this.client = client;
     this.output = output;
+    this.tools = tools;
     this.model = config.model;
     this.temperature = config.temperature;
     this.maxOutputTokens = config.maxOutputTokens;
@@ -57,6 +64,8 @@ export class Session {
     this.stream = config.stream;
     this.thinking = config.thinking;
     this.verbose = config.verbose;
+    this.toolsEnabled = config.tools && tools !== undefined;
+    this.maxToolRounds = config.maxToolRounds;
   }
 
   get attachedImages(): number {
@@ -89,65 +98,24 @@ export class Session {
   }
 
   /**
-   * One turn. On success the assistant reply is appended exactly as printed
-   * (R6); on failure the user message is rolled back so the next request does
-   * not carry an unanswered turn (R7).
+   * One turn, which may span several requests when the model calls tools.
+   *
+   * On success the assistant reply is stored exactly as printed (R6); on
+   * failure the whole turn is rolled back, so no assistant tool call is left
+   * without its result (R7, R15).
    */
   async ask(text: string, signal?: AbortSignal): Promise<TurnResult> {
     this.conversation.addUser(this.buildContent(text));
     this.pendingImages = [];
 
-    const trimmed = this.conversation.toRequest(this.contextBudgetTokens);
-
-    if (this.verbose && trimmed.droppedExchanges > 0) {
-      this.output.warn(
-        `Context budget reached: dropped the ${trimmed.droppedExchanges} oldest exchange(s).`,
-      );
-    }
-    if (trimmed.overBudget) {
-      this.output.warn(
-        "This message alone exceeds the context budget; the API may reject it.",
-      );
-    }
-
-    const request: ChatRequest = {
-      model: this.model,
-      messages: trimmed.messages,
-      temperature: this.temperature,
-      maxOutputTokens: this.maxOutputTokens,
-      thinking: this.thinking,
-    };
-
-    if (this.stream) this.output.beginStream();
-
     try {
-      const result = this.stream
-        ? await this.client.stream(request, (delta) => this.output.writeDelta(delta), signal)
-        : await this.client.complete(request, signal);
-
-      if (this.stream) {
-        // Flushes anything the Markdown renderer withheld, then closes the line.
-        this.output.endStream();
-      } else {
-        this.output.block(result.text);
-      }
-
-      // R6: history stores exactly the text that was printed.
-      this.conversation.addAssistant(result.text);
-
-      if (this.verbose && result.usage) {
-        this.output.meta(
-          `${result.usage.promptTokens} prompt + ${result.usage.completionTokens} completion tokens`,
-        );
-      }
-      return { ok: true, text: result.text };
+      return await this.runTurn(signal);
     } catch (error) {
       // Whatever the renderer withheld is still the model's output; show it
       // rather than dropping it because the turn failed.
       if (this.stream) this.output.endStream();
 
-      // R7: the turn failed, so it leaves no trace in history.
-      this.conversation.rollbackLastUser();
+      this.conversation.rollbackTurn();
 
       const message = describeError(error);
       this.output.error(message);
@@ -156,6 +124,83 @@ export class Session {
       }
       return { ok: false, text: "", error: message };
     }
+  }
+
+  private async runTurn(signal?: AbortSignal): Promise<TurnResult> {
+    for (let round = 0; ; round++) {
+      const result = await this.requestOnce(signal);
+      const calls = result.toolCalls ?? [];
+
+      if (calls.length === 0 || !this.toolsEnabled || this.tools === undefined) {
+        this.conversation.addAssistant(result.text);
+        return { ok: true, text: result.text };
+      }
+
+      this.conversation.addAssistantToolCalls(result.text, calls);
+
+      // R12: the budget is spent. Every call still gets an answer, so history
+      // stays valid (R15) and the model is told why it stopped.
+      if (round >= this.maxToolRounds) {
+        const reason = `Not run: this turn's budget of ${this.maxToolRounds} tool rounds is spent.`;
+        for (const call of calls) this.conversation.addToolResult(call.id, reason);
+
+        this.output.warn(
+          `Stopped after ${this.maxToolRounds} tool rounds. Ask again to continue.`,
+        );
+        return { ok: false, text: result.text, error: "tool round budget exhausted" };
+      }
+
+      for (const call of calls) {
+        const outcome = await this.tools.execute(
+          { id: call.id, name: call.function.name, arguments: call.function.arguments },
+          signal,
+        );
+        this.conversation.addToolResult(outcome.id, outcome.content);
+      }
+    }
+  }
+
+  private async requestOnce(signal?: AbortSignal): Promise<ChatResult> {
+    const trimmed = this.conversation.toRequest(this.contextBudgetTokens);
+
+    if (this.verbose && trimmed.droppedExchanges > 0) {
+      this.output.warn(
+        `Context budget reached: dropped the ${trimmed.droppedExchanges} oldest exchange(s).`,
+      );
+    }
+    if (trimmed.overBudget) {
+      this.output.warn("This message alone exceeds the context budget; the API may reject it.");
+    }
+
+    const request: ChatRequest = {
+      model: this.model,
+      messages: trimmed.messages,
+      temperature: this.temperature,
+      maxOutputTokens: this.maxOutputTokens,
+      thinking: this.thinking,
+      // R10: undefined, not an empty array, when tools are off.
+      tools: this.toolsEnabled ? this.tools?.specifications() : undefined,
+    };
+
+    if (this.stream) this.output.beginStream();
+
+    const result = this.stream
+      ? await this.client.stream(request, (delta) => this.output.writeDelta(delta), signal)
+      : await this.client.complete(request, signal);
+
+    if (this.stream) {
+      // Flushes anything the Markdown renderer withheld, then closes the line.
+      this.output.endStream();
+    } else if (result.text !== "") {
+      this.output.block(result.text);
+    }
+
+    if (this.verbose && result.usage) {
+      this.output.meta(
+        `${result.usage.promptTokens} prompt + ${result.usage.completionTokens} completion tokens`,
+      );
+    }
+    return result;
   }
 
   private buildContent(text: string): string | ContentPart[] {
