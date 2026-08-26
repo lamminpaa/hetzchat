@@ -35,7 +35,7 @@ describe("R1 retries consume rate-limit budget", () => {
     const transport = new FakeTransport({ error: new RetryableError("429", 429, 0, undefined) });
     const { client } = makeClient(transport, 4);
 
-    await expect(client.stream(request, () => {})).rejects.toBeInstanceOf(RetryableError);
+    await expect(client.stream(request, { onContent: () => {} })).rejects.toBeInstanceOf(RetryableError);
 
     // Four attempts were made, so four slots are spent — a retry that skipped
     // the limiter would be exactly the request the server is refusing.
@@ -47,7 +47,7 @@ describe("R1 retries consume rate-limit budget", () => {
     const transport = new FakeTransport({ deltas: ["ok"] });
     const { client, clock, throttles } = makeClient(transport, 1);
 
-    for (let i = 0; i < 12; i++) await client.stream(request, () => {});
+    for (let i = 0; i < 12; i++) await client.stream(request, { onContent: () => {} });
 
     expect(transport.streamCalls).toHaveLength(12);
     expect(clock.now()).toBeGreaterThanOrEqual(60_000);
@@ -63,7 +63,7 @@ describe("R9 stream interruption is terminal", () => {
     });
     const { client } = makeClient(transport, 4);
 
-    await expect(client.stream(request, () => {})).rejects.toBeInstanceOf(StreamInterruptedError);
+    await expect(client.stream(request, { onContent: () => {} })).rejects.toBeInstanceOf(StreamInterruptedError);
     expect(transport.streamCalls).toHaveLength(1);
   });
 
@@ -74,7 +74,7 @@ describe("R9 stream interruption is terminal", () => {
     });
     const { client } = makeClient(transport, 4);
 
-    await expect(client.stream(request, () => {})).rejects.toThrow(/12 characters/);
+    await expect(client.stream(request, { onContent: () => {} })).rejects.toThrow(/12 characters/);
   });
 });
 
@@ -87,8 +87,8 @@ describe("session usage accounting", () => {
     );
     const { client } = makeClient(transport, 1);
 
-    await client.stream(request, () => {});
-    await client.stream(request, () => {});
+    await client.stream(request, { onContent: () => {} });
+    await client.stream(request, { onContent: () => {} });
 
     expect(client.sessionUsage()).toEqual({
       requests: 2,
@@ -101,7 +101,7 @@ describe("session usage accounting", () => {
     const transport = new FakeTransport({ error: new InferenceError("400", 400) });
     const { client } = makeClient(transport, 4);
 
-    await expect(client.stream(request, () => {})).rejects.toBeInstanceOf(InferenceError);
+    await expect(client.stream(request, { onContent: () => {} })).rejects.toBeInstanceOf(InferenceError);
     expect(client.sessionUsage().requests).toBe(0);
   });
 });

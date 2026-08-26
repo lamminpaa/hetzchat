@@ -136,15 +136,19 @@ export const COMMANDS: Command[] = [
   {
     name: "think",
     args: "on|off",
-    summary: "Toggle the model's thinking mode (undocumented API extension)",
+    summary: "Show the model's reasoning, which it always produces",
     run(args, { session, output }) {
-      const value = parseToggle(args, session.thinking ?? false);
+      const value = parseToggle(args, session.showReasoning);
       if (value === undefined) {
         output.warn("Use /think on or /think off");
         return;
       }
-      session.thinking = value;
-      output.meta(`Thinking mode ${value ? "on" : "off"}`);
+      session.showReasoning = value;
+      output.meta(
+        value
+          ? "Showing the model's reasoning."
+          : "Hiding the model's reasoning. It still happens, and still costs output tokens.",
+      );
     },
   },
   {

@@ -116,3 +116,20 @@ Every tool result carries the `tool_call_id` of the call that produced it, and
 a request is never sent with an assistant tool call that has no matching
 result. Trimming drops whole exchanges, so a tool call and its results are
 never separated.
+
+## R16 — Reasoning is surfaced, not silently discarded
+
+The served models always return a chain of thought in a separate `reasoning`
+field, whether or not it was asked for. `enable_thinking: false` does not stop
+it, so the client does not send that field at all.
+
+Reasoning is displayed only when asked for, is never stored in history, and is
+never treated as the assistant's reply. Hiding it does not make it free: it is
+charged against `max_tokens` either way, and the client says so.
+
+## R17 — An answer that never arrived says why
+
+Reasoning is charged against the output budget, so a low cap can consume all of
+it and return no content at all. When the API stops for length with empty
+content, the user is told where the tokens went instead of being shown an empty
+answer.

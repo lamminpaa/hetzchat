@@ -32,7 +32,14 @@ export interface ScriptedToolCall {
 }
 
 export type Reply =
-  | { kind: "content"; deltas: string[]; usage?: { prompt: number; completion: number } }
+  | {
+      kind: "content";
+      deltas: string[];
+      /** The served models always stream reasoning alongside the answer. */
+      reasoning?: string[];
+      finishReason?: string;
+      usage?: { prompt: number; completion: number };
+    }
   /**
    * A tool-calling response. When streaming, the arguments are split one
    * character per chunk, as a real server spreads them across deltas.
@@ -141,8 +148,14 @@ export class MockInferenceServer {
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: reply.deltas.join("") },
-            finish_reason: "stop",
+            message: {
+              role: "assistant",
+              content: reply.deltas.join(""),
+              ...(reply.kind === "content" && reply.reasoning
+                ? { reasoning: reply.reasoning.join("") }
+                : {}),
+            },
+            finish_reason: reply.kind === "content" ? (reply.finishReason ?? "stop") : "stop",
           },
         ],
         usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
@@ -161,6 +174,11 @@ async function streamReply(
     connection: "keep-alive",
   });
 
+  const reasoning = reply.kind === "content" ? (reply.reasoning ?? []) : [];
+  for (const thought of reasoning) {
+    res.write(`data: ${JSON.stringify(chunk({ reasoning: thought }))}\n\n`);
+  }
+
   for (const delta of reply.deltas) {
     res.write(`data: ${JSON.stringify(chunk({ content: delta }))}\n\n`);
   }
@@ -174,7 +192,8 @@ async function streamReply(
     return;
   }
 
-  res.write(`data: ${JSON.stringify(chunk({}, "stop"))}\n\n`);
+  const finish = reply.kind === "content" ? (reply.finishReason ?? "stop") : "stop";
+  res.write(`data: ${JSON.stringify(chunk({}, finish))}\n\n`);
 
   const usage = reply.kind === "content" ? reply.usage : undefined;
   res.write(
@@ -274,7 +293,7 @@ function toolChunk(toolCalls: unknown[]) {
   };
 }
 
-function chunk(delta: { content?: string }, finishReason: string | null = null) {
+function chunk(delta: { content?: string; reasoning?: string }, finishReason: string | null = null) {
   return {
     id: "chatcmpl-mock",
     object: "chat.completion.chunk",

@@ -21,8 +21,11 @@ export interface Config {
   stream: boolean;
   /** Style the model's Markdown in the terminal. */
   markdown: boolean;
-  /** Undefined leaves the vendor default alone rather than forcing a value. */
-  thinking: boolean | undefined;
+  /**
+   * Show the model's chain of thought. The served models always produce it —
+   * this controls whether it is displayed, not whether it happens.
+   */
+  showReasoning: boolean;
   /** R10: tools are off unless asked for. */
   tools: boolean;
   maxToolRounds: number;
@@ -51,6 +54,7 @@ export const DEFAULTS = {
   maxAttempts: 4,
   stream: true,
   markdown: true,
+  showReasoning: false,
   tools: false,
   maxToolRounds: 6,
   verbose: false,
@@ -228,7 +232,11 @@ export function resolveConfig({ flags = {}, env = {}, file = {} }: ResolveInput)
       boolFromEnv(env["HETZCHAT_MARKDOWN"]) ??
       file.markdown ??
       DEFAULTS.markdown,
-    thinking: flags.thinking ?? boolFromEnv(env["HETZCHAT_THINKING"]) ?? file.thinking,
+    showReasoning:
+      flags.thinking ??
+      boolFromEnv(env["HETZCHAT_THINKING"]) ??
+      file.thinking ??
+      DEFAULTS.showReasoning,
     tools: flags.tools ?? boolFromEnv(env["HETZCHAT_TOOLS"]) ?? file.tools ?? DEFAULTS.tools,
     maxToolRounds:
       numberFromEnv(env["HETZCHAT_MAX_TOOL_ROUNDS"], "HETZCHAT_MAX_TOOL_ROUNDS") ??

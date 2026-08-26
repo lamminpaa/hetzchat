@@ -129,7 +129,7 @@ Options:
       --stream / --no-stream   Stream the response as it arrives
       --markdown / --no-markdown
                                Style the model's Markdown in the terminal
-      --think / --no-think     Toggle the model's thinking mode (undocumented)
+      --think / --no-think     Show the model's reasoning, which it always produces
       --tools / --no-tools     Let the model call local tools
       --allow-tool <name>      Pre-authorise a tool; repeatable. Implies --tools
   -v, --verbose                Report retries, throttling and token usage

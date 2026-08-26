@@ -57,7 +57,7 @@ echo "question" | hetzchat   Same, reading the prompt from stdin
 | `-i, --interactive` | Run the session loop even on piped stdin |
 | `--stream` / `--no-stream` | Stream the response as it arrives |
 | `--markdown` / `--no-markdown` | Style the model's Markdown in the terminal |
-| `--think` / `--no-think` | Toggle thinking mode (undocumented API extension) |
+| `--think` / `--no-think` | Show the model's reasoning, which it always produces |
 | `--tools` / `--no-tools` | Let the model call local tools |
 | `--allow-tool <name>` | Pre-authorise a tool; repeatable. Implies `--tools` |
 | `-v, --verbose` | Report retries, throttling and token usage |
@@ -73,7 +73,7 @@ echo "question" | hetzchat   Same, reading the prompt from stdin
 | `/clear` | Forget the conversation so far |
 | `/temp [n]` | Show or set the sampling temperature |
 | `/stream on\|off` | Toggle streaming |
-| `/think on\|off` | Toggle thinking mode |
+| `/think on\|off` | Show the model's reasoning |
 | `/tools on\|off` | Show or toggle the model's access to local tools |
 | `/image <path>` | Attach an image to the next message |
 | `/save [path]` | Write the transcript to Markdown |
@@ -155,11 +155,26 @@ Each turn is capped at `HETZCHAT_MAX_TOOL_ROUNDS` (default 6) rounds of tool
 use, so a model that keeps asking for tools stops rather than spending the
 rate-limit budget in a loop.
 
-## Models
+## Models and reasoning
 
-Query the live list with `/models`. At the time of writing the API serves
-`Qwen/Qwen3.6-35B-A3B-FP8` (MoE, 35B total / 3B active) and `Qwen3.8-27B`
-(dense), both with a 262144-token context and both accepting images.
+Query the live list with `/models`. The API serves `Qwen/Qwen3.6-35B-A3B-FP8`
+(MoE, 35B total / 3B active) and `Qwen3.8-27B` (dense), both with a
+262144-token context and both accepting images.
+
+**Both models always reason before answering.** The chain of thought comes back
+in a separate `reasoning` field, and it is charged against `max_tokens`. A
+one-sentence answer routinely costs 150 completion tokens, of which 500-odd
+characters are reasoning you never asked for.
+
+`--think` shows it. It does not turn it on or off — nothing does. In particular
+`enable_thinking: false`, which some write-ups suggest, is silently ignored by
+the served models, so this client does not send it.
+
+The practical consequence is that a small `--max-output-tokens` can be spent
+entirely on thinking, leaving no answer at all. Asked to explain the CAP theorem
+with a 400-token cap, the model produced 1838 characters of reasoning, stopped
+on `length`, and returned no content. When that happens the client says so
+rather than showing you an empty reply.
 
 ## What this client guarantees
 
@@ -181,7 +196,9 @@ and each has a test derived from it:
 - tool results never carry the token back to the API or into a transcript;
 - `run_shell` and `fetch_url` are bounded in time and output size, and a
   cancelled or truncated run is reported as such rather than as a normal result;
-- Markdown styling is identical however the response was split into deltas.
+- Markdown styling is identical however the response was split into deltas;
+- reasoning is never stored in history or sent back to the model;
+- a response that spent its whole budget thinking explains itself.
 
 ## Development
 
@@ -200,6 +217,10 @@ hit them.
 ## Caveats
 
 The Inference API is an experiment: no SLA, no billing, no production guarantee,
-and the model list can change under you. Hetzner states it does not store request
-or response content, only usage metrics. `--think` uses an undocumented request
-field and may stop working without notice.
+and the model list can change under you. Hetzner states it does not store
+request or response content, only usage metrics.
+
+Verified against the live API: both documented models are served, tool calling
+works, the streaming format uses `data:{...}` with no space after the colon,
+and reasoning arrives in a `reasoning` field rather than the `reasoning_content`
+that vLLM usually emits. None of that is contractual.

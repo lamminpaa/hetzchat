@@ -76,14 +76,70 @@ describe("single-shot mode", () => {
     expect(body?.max_tokens).toBe(128);
   });
 
-  it("only sends the thinking extension when it is asked for", async () => {
+  it("never sends enable_thinking, which the served models ignore", async () => {
     server.queue({ kind: "content", deltas: ["ok"] }, { kind: "content", deltas: ["ok"] });
 
     await runCli({ args: ["hi"], env: env() });
     expect(server.chatRequests[0]?.body).not.toHaveProperty("enable_thinking");
 
+    // --think controls whether reasoning is shown, not whether it happens:
+    // the live API returns reasoning either way and ignores the field.
     await runCli({ args: ["--think", "hi"], env: env() });
-    expect(server.chatRequests[1]?.body?.enable_thinking).toBe(true);
+    expect(server.chatRequests[1]?.body).not.toHaveProperty("enable_thinking");
+  });
+});
+
+describe("R16 reasoning from the wire", () => {
+  it("parses the reasoning stream and keeps it out of the answer", async () => {
+    server.queue({
+      kind: "content",
+      reasoning: ["Let me work ", "through this."],
+      deltas: ["The answer is four."],
+    });
+
+    const result = await runCli({ args: ["--think", "2+2?"], env: env() });
+
+    expect(result.stdout).toContain("Let me work through this.");
+    expect(result.stdout).toContain("The answer is four.");
+  });
+
+  it("prints only the answer when reasoning is not asked for", async () => {
+    server.queue({
+      kind: "content",
+      reasoning: ["Let me work through this."],
+      deltas: ["The answer is four."],
+    });
+
+    const result = await runCli({ args: ["2+2?"], env: env() });
+
+    expect(result.stdout).toBe("The answer is four.\n");
+  });
+
+  it("reads reasoning from a non-streamed response too", async () => {
+    server.queue({
+      kind: "content",
+      reasoning: ["Deliberating carefully."],
+      deltas: ["Four."],
+    });
+
+    const result = await runCli({ args: ["--no-stream", "--think", "2+2?"], env: env() });
+
+    expect(result.stdout).toContain("Deliberating carefully.");
+    expect(result.stdout).toContain("Four.");
+  });
+
+  it("R17: explains an empty answer that spent its budget thinking", async () => {
+    server.queue({
+      kind: "content",
+      reasoning: ["thinking at great length"],
+      deltas: [],
+      finishReason: "length",
+    });
+
+    const result = await runCli({ args: ["something hard"], env: env() });
+
+    expect(result.stderr).toMatch(/output tokens thinking/);
+    expect(result.stderr).toContain("--max-output-tokens");
   });
 });
 
@@ -160,7 +216,9 @@ describe("R2 retry behaviour against a real 429", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("answered on the retry");
     expect(server.chatRequests).toHaveLength(2);
-    expect(result.stderr).toContain("retrying");
+    // The message has to say what went wrong, not just that something did.
+    expect(result.stderr).toMatch(/Attempt 1 failed: .*429/);
+    expect(result.stderr).toContain("Retrying in");
   });
 
   it("gives up after the attempt budget rather than hammering the API", async () => {

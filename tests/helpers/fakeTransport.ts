@@ -2,7 +2,7 @@ import type { ToolCallMessage } from "../../src/conversation.js";
 import type {
   ChatRequest,
   ChatResult,
-  DeltaHandler,
+  StreamHandlers,
   Transport,
 } from "../../src/client/transport.js";
 
@@ -13,6 +13,9 @@ export interface StreamScript {
   usage?: { promptTokens: number; completionTokens: number };
   /** Tool calls the model asks for on this response. */
   toolCalls?: { name: string; arguments: string; id?: string }[];
+  /** Reasoning deltas, which the served models always produce. */
+  reasoning?: string[];
+  finishReason?: string;
 }
 
 let callCounter = 0;
@@ -52,17 +55,29 @@ export class FakeTransport implements Transport {
     return this;
   }
 
-  async stream(request: ChatRequest, onDelta: DeltaHandler): Promise<ChatResult> {
+  async stream(request: ChatRequest, handlers: StreamHandlers): Promise<ChatResult> {
     this.streamCalls.push(structuredClone(request));
     const script = this.scripts.shift() ?? this.fallback;
+
+    let reasoning = "";
+    for (const delta of script.reasoning ?? []) {
+      reasoning += delta;
+      handlers.onReasoning?.(delta);
+    }
 
     let text = "";
     for (const delta of script.deltas ?? []) {
       text += delta;
-      onDelta(delta);
+      handlers.onContent(delta);
     }
     if (script.error !== undefined) throw script.error;
-    return { text, usage: script.usage, toolCalls: toToolCalls(script) };
+    return {
+      text,
+      reasoning: reasoning === "" ? undefined : reasoning,
+      usage: script.usage,
+      finishReason: script.finishReason,
+      toolCalls: toToolCalls(script),
+    };
   }
 
   async complete(request: ChatRequest): Promise<ChatResult> {
@@ -71,7 +86,9 @@ export class FakeTransport implements Transport {
     if (script.error !== undefined) throw script.error;
     return {
       text: (script.deltas ?? []).join(""),
+      reasoning: script.reasoning?.join("") ?? undefined,
       usage: script.usage,
+      finishReason: script.finishReason,
       toolCalls: toToolCalls(script),
     };
   }

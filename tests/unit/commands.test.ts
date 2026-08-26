@@ -128,7 +128,7 @@ describe("command behaviour", () => {
     expect(streamOff.session.stream).toBe(!DEFAULTS.stream);
 
     const thinkOn = await dispatch("/think");
-    expect(thinkOn.session.thinking).toBe(true);
+    expect(thinkOn.session.showReasoning).toBe(true);
   });
 
   it("/exit asks the loop to stop", async () => {

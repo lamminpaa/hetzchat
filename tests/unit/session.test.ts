@@ -79,6 +79,132 @@ describe("R6 streaming fidelity", () => {
   });
 });
 
+describe("R6 the chat template's leading blank lines are dropped consistently", () => {
+  it("does not open every answer with the template's newlines", async () => {
+    const { session, captured } = makeSession({ deltas: ["\n\n", "The answer."] });
+
+    await session.ask("q");
+
+    expect(captured.stdout()).toBe("The answer.\n");
+  });
+
+  it("stores exactly what it printed", async () => {
+    const { session, captured } = makeSession({ deltas: ["\n\n", "The answer."] });
+
+    await session.ask("q");
+
+    const printed = captured.stdout().replace(/\n$/, "");
+    expect(session.conversation.history().at(-1)?.content).toBe(printed);
+  });
+
+  it("agrees however the leading whitespace was split across deltas", async () => {
+    for (const deltas of [
+      ["\n\nThe answer."],
+      ["\n", "\n", "The answer."],
+      ["\n\n", "The", " answer."],
+      ["  \n\n  ", "The answer."],
+    ]) {
+      const { session, captured } = makeSession({ deltas });
+      await session.ask("q");
+
+      expect(captured.stdout(), JSON.stringify(deltas)).toBe("The answer.\n");
+      expect(session.conversation.history().at(-1)?.content).toBe("The answer.");
+    }
+  });
+
+  it("leaves whitespace inside the answer alone", async () => {
+    const { session, captured } = makeSession({ deltas: ["\n\nline one\n\nline two"] });
+
+    await session.ask("q");
+
+    expect(captured.stdout()).toBe("line one\n\nline two\n");
+  });
+});
+
+describe("R16 reasoning is surfaced, not discarded", () => {
+  it("hides reasoning by default, and does not mistake it for the answer", async () => {
+    const { session, captured } = makeSession({
+      reasoning: ["Let me think. ", "2 + 2 = 4."],
+      deltas: ["Four."],
+    });
+
+    await session.ask("what is 2+2?");
+
+    expect(captured.stdout()).toBe("Four.\n");
+    expect(captured.stdout()).not.toContain("Let me think");
+    expect(session.conversation.history().at(-1)?.content).toBe("Four.");
+  });
+
+  it("shows it when asked, ahead of the answer", async () => {
+    const { session, captured } = makeSession(
+      { reasoning: ["Let me think. ", "2 + 2 = 4."], deltas: ["Four."] },
+      { HETZCHAT_THINKING: "on" },
+    );
+
+    await session.ask("what is 2+2?");
+
+    expect(captured.stdout()).toContain("Let me think. 2 + 2 = 4.");
+    expect(captured.stdout()).toContain("Four.");
+    expect(captured.stdout().indexOf("Let me think")).toBeLessThan(
+      captured.stdout().indexOf("Four."),
+    );
+  });
+
+  it("never puts reasoning into history, even when shown", async () => {
+    const { session, transport } = makeSession(
+      { reasoning: ["private deliberation"], deltas: ["Four."] },
+      { HETZCHAT_THINKING: "on" },
+    );
+
+    await session.ask("first");
+    await session.ask("second");
+
+    const sent = JSON.stringify(transport.streamCalls[1]?.messages);
+    expect(sent, "reasoning was sent back to the model").not.toContain("private deliberation");
+    expect(session.conversation.history().map((m) => m.content)).toEqual([
+      "first",
+      "Four.",
+      "second",
+      "Four.",
+    ]);
+  });
+});
+
+describe("R17 an answer that never arrived says why", () => {
+  it("explains an empty response that hit the token cap", async () => {
+    const { session, captured } = makeSession({
+      reasoning: ["thinking and thinking and thinking"],
+      deltas: [],
+      finishReason: "length",
+    });
+
+    const result = await session.ask("something hard");
+
+    expect(result.text).toBe("");
+    expect(captured.stderr()).toMatch(/used all \d+ output tokens thinking/);
+    expect(captured.stderr()).toMatch(/--max-output-tokens/);
+  });
+
+  it("says nothing when the response ended normally", async () => {
+    const { session, captured } = makeSession({ deltas: ["a real answer"] });
+
+    await session.ask("something easy");
+
+    expect(captured.stderr()).toBe("");
+  });
+
+  it("says nothing when the cap was hit but an answer did arrive", async () => {
+    const { session, captured } = makeSession({
+      deltas: ["a truncated but real answer"],
+      finishReason: "length",
+    });
+
+    await session.ask("something long");
+
+    expect(captured.stderr()).toBe("");
+  });
+});
+
 describe("R7 a failed turn leaves history clean", () => {
   it("rolls the user message back out when the request fails", async () => {
     const { session } = makeSession({ error: new InferenceError("Bad Request", 400) });

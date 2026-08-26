@@ -1,7 +1,13 @@
 import { SlidingWindowLimiter, type LimiterClock } from "../rateLimiter.js";
 import { withRetry, type RetryClock } from "../retry.js";
 import { isRetryable, StreamInterruptedError } from "./errors.js";
-import type { ChatRequest, ChatResult, DeltaHandler, Transport, Usage } from "./transport.js";
+import type {
+  ChatRequest,
+  ChatResult,
+  StreamHandlers,
+  Transport,
+  Usage,
+} from "./transport.js";
 
 export interface InferenceClientOptions {
   transport: Transport;
@@ -12,7 +18,13 @@ export interface InferenceClientOptions {
   maxDelayMs?: number;
   limiterClock?: LimiterClock;
   retryClock?: RetryClock;
-  onRetry?: (info: { attempt: number; delayMs: number; error: unknown }) => void;
+  onRetry?: (info: {
+    attempt: number;
+    delayMs: number;
+    error: unknown;
+    /** Set when the server asked for a longer wait than maxDelayMs allows. */
+    requestedMs?: number;
+  }) => void;
   onThrottle?: (waitMs: number) => void;
 }
 
@@ -49,7 +61,7 @@ export class InferenceClient {
 
   async stream(
     request: ChatRequest,
-    onDelta: DeltaHandler,
+    handlers: StreamHandlers,
     signal?: AbortSignal,
   ): Promise<ChatResult> {
     return this.run((attemptSignal) => {
@@ -58,9 +70,17 @@ export class InferenceClient {
       return this.options.transport
         .stream(
           request,
-          (delta) => {
-            printed += delta.length;
-            onDelta(delta);
+          {
+            onContent: (delta) => {
+              printed += delta.length;
+              handlers.onContent(delta);
+            },
+            onReasoning: (delta) => {
+              // R9 counts reasoning as printed output too: it is on screen,
+              // so replaying the turn would show it twice.
+              printed += delta.length;
+              handlers.onReasoning?.(delta);
+            },
           },
           attemptSignal,
         )

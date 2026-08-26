@@ -1,9 +1,18 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ENTRY = resolve(ROOT, "dist", "index.js");
+
+/**
+ * The CLI loads a .env from its working directory. Running from the repo root
+ * would pick up a developer's real token and quietly defeat any test about a
+ * missing or overridden one, so the default cwd is an empty directory.
+ */
+const CLEAN_CWD = mkdtempSync(join(tmpdir(), "hetzchat-clean-cwd-"));
 
 export interface CliResult {
   code: number;
@@ -28,7 +37,7 @@ export async function runCli({
   args = [],
   stdin = "",
   env = {},
-  cwd = ROOT,
+  cwd = CLEAN_CWD,
   timeoutMs = 20_000,
 }: CliOptions = {}): Promise<CliResult> {
   const child = spawn(process.execPath, [ENTRY, ...args], {

@@ -20,6 +20,16 @@ export interface OutputOptions {
   markdown?: boolean;
 }
 
+/**
+ * The chat template puts newlines between the reasoning block and the answer,
+ * so every response arrives with leading whitespace. Display and history apply
+ * this same rule, so R6 — what you saw is what the model is told it said —
+ * still holds.
+ */
+export function stripLeadingBlank(text: string): string {
+  return text.replace(/^\s+/, "");
+}
+
 const ANSI = {
   reset: "\u001b[0m",
   dim: "\u001b[2m",
@@ -32,6 +42,8 @@ const ANSI = {
 export class Output {
   private stream: MarkdownStream | undefined;
   private streamWrote = false;
+  private reasoningOpen = false;
+  private answerStarted = false;
 
   constructor(private readonly options: OutputOptions) {}
 
@@ -39,12 +51,43 @@ export class Output {
   beginStream(): void {
     this.stream = new MarkdownStream(this.options.color && this.options.markdown !== false);
     this.streamWrote = false;
+    this.reasoningOpen = false;
+    this.answerStarted = false;
+  }
+
+  /**
+   * The model's chain of thought, which arrives before the answer. Written raw
+   * and dimmed rather than through the Markdown renderer: it is a scratchpad,
+   * not a document, and feeding it in would carry its half-finished fences
+   * into the answer's rendering state.
+   */
+  writeReasoning(delta: string): void {
+    if (!this.reasoningOpen) {
+      this.reasoningOpen = true;
+      this.streamWrote = true;
+      this.options.stdout.write(this.paint("thinking", ANSI.dim + ANSI.cyan) + "\n");
+    }
+    this.options.stdout.write(this.options.redact(this.paint(delta, ANSI.dim)));
   }
 
   /** One delta from the model, styled if styling is on. */
   writeDelta(delta: string): void {
-    if (delta !== "") this.streamWrote = true;
-    this.write(this.stream?.push(delta) ?? delta);
+    let text = delta;
+
+    if (!this.answerStarted) {
+      text = stripLeadingBlank(text);
+      // Still nothing but whitespace: the answer has not really begun.
+      if (text === "") return;
+      this.answerStarted = true;
+    }
+
+    // The answer has started; close the reasoning block first.
+    if (this.reasoningOpen) {
+      this.reasoningOpen = false;
+      this.options.stdout.write("\n\n");
+    }
+    this.streamWrote = true;
+    this.write(this.stream?.push(text) ?? text);
   }
 
   /**
@@ -60,6 +103,8 @@ export class Output {
     // A turn that only called tools printed nothing; do not open a blank line.
     if (this.streamWrote) this.line();
     this.streamWrote = false;
+    this.reasoningOpen = false;
+    this.answerStarted = false;
   }
 
   /** A whole response that did not arrive as a stream. */

@@ -16,7 +16,11 @@ without it `node:*` imports fail to resolve.
 - Endpoints: `/models`, `/chat/completions`, `/completions`
 - Rate limit per token per 60 s: 10 requests, 4M input tokens, 100k output tokens
 - Free while experimental; no SLA; request/response content is not stored
-- `enable_thinking` is an undocumented request field, sent only when `/think` is on
+- Both models **always** stream a chain of thought in a `reasoning` delta field
+  (not vLLM's usual `reasoning_content`), and it counts against `max_tokens`
+- `enable_thinking: false` is silently ignored — verified against the live API.
+  Do not send it; `/think` controls display only
+- The SSE format is `data:{...}` with no space after the colon
 
 ## Layout
 
@@ -59,6 +63,9 @@ Two things that are easy to get wrong here:
 - `readdir` returns sorted entries on most filesystems, which hides an
   order-dependent listing bug. That is why `formatEntries` is exported and
   tested directly rather than through the tool.
+- The CLI loads `.env` from its working directory, so tests that spawn it must
+  run from a clean cwd or they pick up the developer's real token. That is what
+  `CLEAN_CWD` in `tests/helpers/runCli.ts` is for.
 - Node reports a *string* `code` from `execFile` when a command did not complete
   normally (`ABORT_ERR`, `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`). Treating it as an
   exit status hands the model truncated output dressed up as a finished run.

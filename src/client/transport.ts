@@ -8,8 +8,6 @@ export interface ChatRequest {
   messages: ChatMessage[];
   temperature: number;
   maxOutputTokens: number;
-  /** Undocumented Hetzner extension; only sent when explicitly set. */
-  thinking?: boolean | undefined;
   /** R10: absent unless tools are switched on. */
   tools?: Record<string, unknown>[] | undefined;
 }
@@ -21,6 +19,11 @@ export interface Usage {
 
 export interface ChatResult {
   text: string;
+  /**
+   * The models always return a separate reasoning stream alongside the answer.
+   * It is not part of the assistant's message and is never stored in history.
+   */
+  reasoning?: string | undefined;
   usage?: Usage | undefined;
   finishReason?: string | undefined;
   toolCalls?: ToolCallMessage[] | undefined;
@@ -28,8 +31,17 @@ export interface ChatResult {
 
 export type DeltaHandler = (delta: string) => void;
 
+export interface StreamHandlers {
+  onContent: DeltaHandler;
+  onReasoning?: DeltaHandler | undefined;
+}
+
 export interface Transport {
-  stream(request: ChatRequest, onDelta: DeltaHandler, signal?: AbortSignal): Promise<ChatResult>;
+  stream(
+    request: ChatRequest,
+    handlers: StreamHandlers,
+    signal?: AbortSignal,
+  ): Promise<ChatResult>;
   complete(request: ChatRequest, signal?: AbortSignal): Promise<ChatResult>;
   listModels(signal?: AbortSignal): Promise<string[]>;
 }
@@ -54,7 +66,7 @@ export class OpenAITransport implements Transport {
 
   async stream(
     request: ChatRequest,
-    onDelta: DeltaHandler,
+    handlers: StreamHandlers,
     signal?: AbortSignal,
   ): Promise<ChatResult> {
     const body = {
@@ -64,6 +76,7 @@ export class OpenAITransport implements Transport {
     };
 
     let text = "";
+    let reasoning = "";
     let usage: Usage | undefined;
     let finishReason: string | undefined;
     const toolCalls = new ToolCallAccumulator();
@@ -80,7 +93,13 @@ export class OpenAITransport implements Transport {
 
         if (typeof delta === "string" && delta.length > 0) {
           text += delta;
-          onDelta(delta);
+          handlers.onContent(delta);
+        }
+
+        const thought = choice?.delta?.reasoning;
+        if (typeof thought === "string" && thought.length > 0) {
+          reasoning += thought;
+          handlers.onReasoning?.(thought);
         }
         for (const partial of choice?.delta?.tool_calls ?? []) toolCalls.add(partial);
 
@@ -91,7 +110,13 @@ export class OpenAITransport implements Transport {
       throw toClientError(error);
     }
 
-    return { text, usage, finishReason, toolCalls: toolCalls.result() };
+    return {
+      text,
+      reasoning: reasoning === "" ? undefined : reasoning,
+      usage,
+      finishReason,
+      toolCalls: toolCalls.result(),
+    };
   }
 
   async complete(request: ChatRequest, signal?: AbortSignal): Promise<ChatResult> {
@@ -113,6 +138,7 @@ export class OpenAITransport implements Transport {
 
       return {
         text: choice?.message?.content ?? "",
+        reasoning: choice?.message?.reasoning ?? undefined,
         usage: completion.usage ? toUsage(completion.usage) : undefined,
         finishReason: choice?.finish_reason ?? undefined,
         toolCalls: calls.length > 0 ? calls : undefined,
@@ -140,7 +166,12 @@ interface RawToolCallDelta {
 
 interface ChatChunk {
   choices?: {
-    delta?: { content?: string | null; tool_calls?: RawToolCallDelta[] | null };
+    delta?: {
+      content?: string | null;
+      /** Hetzner's models stream their chain of thought here. */
+      reasoning?: string | null;
+      tool_calls?: RawToolCallDelta[] | null;
+    };
     finish_reason?: string | null;
   }[];
   usage?: RawUsage | null;
@@ -150,6 +181,7 @@ interface ChatCompletionLike {
   choices?: {
     message?: {
       content?: string | null;
+      reasoning?: string | null;
       tool_calls?: { id?: string | null; function?: { name?: string | null; arguments?: string | null } | null }[] | null;
     };
     finish_reason?: string | null;
@@ -217,7 +249,8 @@ function buildBody(request: ChatRequest): Record<string, unknown> {
     temperature: request.temperature,
     max_tokens: request.maxOutputTokens,
   };
-  if (request.thinking !== undefined) body["enable_thinking"] = request.thinking;
+  // Deliberately no enable_thinking: the served models ignore it and stream
+  // their reasoning regardless, so sending it would only imply it does something.
   // R10: the key is absent, not empty, when tools are off.
   if (request.tools !== undefined && request.tools.length > 0) body["tools"] = request.tools;
   return body;

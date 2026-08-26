@@ -6,7 +6,7 @@ import type { ChatRequest, ChatResult } from "./client/transport.js";
 import type { Config } from "./config.js";
 import { Conversation, type ContentPart } from "./conversation.js";
 import type { ToolRunner } from "./tools/runner.js";
-import type { Output } from "./cli/output.js";
+import { stripLeadingBlank, type Output } from "./cli/output.js";
 
 export interface SessionOptions {
   config: Config;
@@ -44,7 +44,8 @@ export class Session {
   maxOutputTokens: number;
   contextBudgetTokens: number;
   stream: boolean;
-  thinking: boolean | undefined;
+  /** Show the model's chain of thought, which it always produces. */
+  showReasoning: boolean;
   verbose: boolean;
   toolsEnabled: boolean;
   maxToolRounds: number;
@@ -62,7 +63,7 @@ export class Session {
     this.maxOutputTokens = config.maxOutputTokens;
     this.contextBudgetTokens = config.contextBudgetTokens;
     this.stream = config.stream;
-    this.thinking = config.thinking;
+    this.showReasoning = config.showReasoning;
     this.verbose = config.verbose;
     this.toolsEnabled = config.tools && tools !== undefined;
     this.maxToolRounds = config.maxToolRounds;
@@ -132,11 +133,13 @@ export class Session {
       const calls = result.toolCalls ?? [];
 
       if (calls.length === 0 || !this.toolsEnabled || this.tools === undefined) {
-        this.conversation.addAssistant(result.text);
-        return { ok: true, text: result.text };
+        // R6: the same rule the display applied, so history matches the screen.
+        const answer = stripLeadingBlank(result.text);
+        this.conversation.addAssistant(answer);
+        return { ok: true, text: answer };
       }
 
-      this.conversation.addAssistantToolCalls(result.text, calls);
+      this.conversation.addAssistantToolCalls(stripLeadingBlank(result.text), calls);
 
       // R12: the budget is spent. Every call still gets an answer, so history
       // stays valid (R15) and the model is told why it stopped.
@@ -177,7 +180,6 @@ export class Session {
       messages: trimmed.messages,
       temperature: this.temperature,
       maxOutputTokens: this.maxOutputTokens,
-      thinking: this.thinking,
       // R10: undefined, not an empty array, when tools are off.
       tools: this.toolsEnabled ? this.tools?.specifications() : undefined,
     };
@@ -185,22 +187,53 @@ export class Session {
     if (this.stream) this.output.beginStream();
 
     const result = this.stream
-      ? await this.client.stream(request, (delta) => this.output.writeDelta(delta), signal)
+      ? await this.client.stream(
+          request,
+          {
+            onContent: (delta) => this.output.writeDelta(delta),
+            ...(this.showReasoning
+              ? { onReasoning: (delta: string) => this.output.writeReasoning(delta) }
+              : {}),
+          },
+          signal,
+        )
       : await this.client.complete(request, signal);
 
     if (this.stream) {
       // Flushes anything the Markdown renderer withheld, then closes the line.
       this.output.endStream();
-    } else if (result.text !== "") {
+    } else if (stripLeadingBlank(result.text) !== "") {
       this.output.block(result.text);
     }
 
+    if (!this.stream && this.showReasoning && result.reasoning !== undefined) {
+      this.output.meta(`thinking\n${result.reasoning}`);
+    }
+
+    this.warnIfBudgetWentToReasoning(result);
+
     if (this.verbose && result.usage) {
+      const reasoned = result.reasoning?.length ?? 0;
       this.output.meta(
-        `${result.usage.promptTokens} prompt + ${result.usage.completionTokens} completion tokens`,
+        `${result.usage.promptTokens} prompt + ${result.usage.completionTokens} completion tokens` +
+          (reasoned > 0 ? `, ${reasoned} characters of it reasoning` : ""),
       );
     }
     return result;
+  }
+
+  /**
+   * The models reason before answering and that reasoning is charged against
+   * max_tokens, so a low cap can consume the entire budget and return nothing.
+   * Without this the user just sees an empty answer.
+   */
+  private warnIfBudgetWentToReasoning(result: ChatResult): void {
+    if (result.finishReason !== "length" || result.text !== "") return;
+
+    this.output.warn(
+      `The model used all ${this.maxOutputTokens} output tokens thinking and never got to an answer. ` +
+        `Raise the cap with --max-output-tokens${this.showReasoning ? "" : ", or see where they went with /think on"}.`,
+    );
   }
 
   private buildContent(text: string): string | ContentPart[] {

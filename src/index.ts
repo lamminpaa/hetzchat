@@ -5,6 +5,7 @@ import { ArgsError, parseCliArgs, USAGE } from "./cli/args.js";
 import { Output } from "./cli/output.js";
 import { runRepl } from "./cli/repl.js";
 import { InferenceClient } from "./client/inference.js";
+import { describeError } from "./client/errors.js";
 import { OpenAITransport } from "./client/transport.js";
 import {
   ConfigError,
@@ -97,10 +98,17 @@ export async function main(argv: readonly string[]): Promise<number> {
         output.warn(`Rate limit reached, waiting ${Math.ceil(waitMs / 1000)}s for a slot.`);
       }
     },
-    onRetry: ({ attempt, delayMs }) => {
-      if (config.verbose) {
-        output.warn(`Attempt ${attempt} failed, retrying in ${Math.ceil(delayMs / 1000)}s.`);
-      }
+    onRetry: ({ attempt, delayMs, error, requestedMs }) => {
+      if (!config.verbose) return;
+
+      // "Attempt 1 failed" says nothing actionable; the status is the point.
+      const asked =
+        requestedMs === undefined
+          ? ""
+          : ` (the server asked for ${Math.ceil(requestedMs / 1000)}s)`;
+      output.warn(
+        `Attempt ${attempt} failed: ${describeError(error)} Retrying in ${Math.ceil(delayMs / 1000)}s${asked}.`,
+      );
     },
   });
 
